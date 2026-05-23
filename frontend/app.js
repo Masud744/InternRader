@@ -61,13 +61,25 @@ async function checkAuth() {
 
 async function handleLogout() {
   try {
-    const auth = window.auth;
-    if (auth) {
-      await auth.signOut();
+    if (logoutBtn) {
+      logoutBtn.innerHTML = '<span class="loading-spinner" style="border-width: 1px; width: 10px; height: 10px;"></span> OUT';
+      logoutBtn.style.pointerEvents = 'none';
     }
-    window.location.href = "login.html";
+    
+    // Force clear any supabase auth tokens locally just in case
+    for (let key in localStorage) {
+      if (key.startsWith('sb-') && key.endsWith('-auth-token')) {
+        localStorage.removeItem(key);
+      }
+    }
+
+    if (window.auth && typeof window.auth.signOut === 'function') {
+      await window.auth.signOut();
+    }
   } catch (error) {
     console.error("Logout error:", error);
+  } finally {
+    window.location.replace("login.html");
   }
 }
 
@@ -97,7 +109,7 @@ function saveBookmarks(bookmarks) {
 
 function updateBookmarkCount() {
   const count = getBookmarks().length;
-  bookmarkCountEl.textContent = `(${count})`;
+  if (bookmarkCountEl) bookmarkCountEl.textContent = String(count);
 }
 
 function isBookmarked(id) {
@@ -124,8 +136,9 @@ function trackClick(id) {
 }
 
 function setStatus(message, isError = false) {
+  if (!statusEl) return;
   statusEl.textContent = message;
-  statusEl.style.color = isError ? "#f87171" : "#8b8299";
+  statusEl.style.color = isError ? "#c0392b" : "var(--text-muted, #8EB69B)";
 }
 
 function escapeHtml(text) {
@@ -285,8 +298,10 @@ async function loadInternships() {
   const url = buildQuery();
   console.log("[InternRadar] Fetching:", url);
   setStatus("Loading internships...");
-  loadBtn.disabled = true;
-  loadBtn.innerHTML = '<span class="loading-spinner"></span> Loading...';
+  if (loadBtn) {
+    loadBtn.disabled = true;
+    loadBtn.innerHTML = '<span class="loading-spinner"></span> LOADING...';
+  }
 
   try {
     const response = await fetch(url);
@@ -325,8 +340,10 @@ async function loadInternships() {
     paginationEl.innerHTML = "";
     setStatus(`Failed: ${error.message}`, true);
   } finally {
-    loadBtn.disabled = false;
-    loadBtn.textContent = "Load Internships";
+    if (loadBtn) {
+      loadBtn.disabled = false;
+      loadBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> LOAD INTERNSHIPS';
+    }
   }
 }
 
@@ -382,22 +399,61 @@ function exportToCSV(items, filename = "internships.csv") {
 }
 
 function showTab(tabName) {
-  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-  document.querySelector(`.tab[data-tab="${tabName}"]`).classList.add("active");
+  document.querySelectorAll(".nav-btn").forEach(t => t.classList.remove("active"));
+  const activeBtn = document.querySelector(`.nav-btn[data-tab="${tabName}"]`);
+  if (activeBtn) activeBtn.classList.add("active");
   
-  document.getElementById("internshipsTab").style.display = tabName === "internships" ? "block" : "none";
-  document.getElementById("bookmarksTab").style.display = tabName === "bookmarks" ? "block" : "none";
-  document.getElementById("analyticsTab").style.display = tabName === "analytics" ? "block" : "none";
+  document.querySelectorAll(".tab-content").forEach(c => {
+    c.classList.remove("active");
+    c.classList.add("hidden");
+  });
+  const activeContent = document.getElementById(`${tabName}Tab`);
+  if (activeContent) {
+    activeContent.classList.remove("hidden");
+    activeContent.classList.add("active");
+  }
+
+  const pageTitle = document.getElementById("pageTitle");
+  if(pageTitle) {
+    if (tabName === "internships") pageTitle.textContent = "DASHBOARD OVERVIEW";
+    else if (tabName === "bookmarks") pageTitle.textContent = "SAVED INTERNSHIPS";
+    else if (tabName === "analytics") pageTitle.textContent = "ANALYTICS OVERVIEW";
+  }
   
   if (tabName === "bookmarks") {
-    const bookmarks = getBookmarks();
-    renderRows(bookmarks);
-    showingCountEl.textContent = String(bookmarks.length);
-    totalCountEl.textContent = String(bookmarks.length);
-    paginationEl.innerHTML = "";
+    renderBookmarksTab();
   } else if (tabName === "analytics") {
     loadAnalytics();
   }
+}
+
+function renderBookmarksTab() {
+  const bookmarks = getBookmarks();
+  const bookmarksBody = document.getElementById("bookmarksBody");
+  if (!bookmarksBody) return;
+
+  if (!bookmarks.length) {
+    bookmarksBody.innerHTML = '<tr><td colspan="8" class="empty-state">No bookmarks saved yet. Use the ★ button to save listings.</td></tr>';
+    return;
+  }
+
+  const rows = bookmarks.map((item) => {
+    const link = item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer">Open</a>` : "—";
+    return `
+      <tr>
+        <td><button class="bookmark-btn active" onclick='toggleBookmark(${JSON.stringify(item)})'>★</button></td>
+        <td>${escapeHtml(item.title || "—")}</td>
+        <td>${escapeHtml(item.company || "—")}</td>
+        <td>${escapeHtml(item.location || "—")}</td>
+        <td><span class="source-tag">${escapeHtml(item.source || "—")}</span></td>
+        <td>${escapeHtml(item.keyword || "—")}</td>
+        <td>${escapeHtml(item.posted_date || "—")}</td>
+        <td>${link}</td>
+      </tr>
+    `;
+  }).join("");
+
+  bookmarksBody.innerHTML = rows;
 }
 
 function resetFilters() {
@@ -413,8 +469,10 @@ function resetFilters() {
   loadInternships();
 }
 
-document.querySelectorAll(".tab").forEach(tab => {
-  tab.addEventListener("click", () => showTab(tab.dataset.tab));
+document.querySelectorAll(".nav-btn").forEach(btn => {
+  if (btn.dataset.tab) {
+    btn.addEventListener("click", () => showTab(btn.dataset.tab));
+  }
 });
 
 loadBtn.addEventListener("click", loadInternships);
@@ -433,6 +491,7 @@ document.getElementById("exportBookmarksBtn")?.addEventListener("click", () => {
 document.getElementById("clearBookmarksBtn")?.addEventListener("click", () => {
   if (confirm("Clear all bookmarks?")) {
     saveBookmarks([]);
+    renderBookmarksTab();
     setStatus("Bookmarks cleared");
   }
 });
