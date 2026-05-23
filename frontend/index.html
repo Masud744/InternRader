@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>InternRadar | Internship Tracker</title>
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+      .tab { padding: 0.5rem 1rem; background: transparent; color: var(--text-muted); border: none; cursor: pointer; font-size: 0.9rem; border-radius: 8px; transition: all 0.2s; }
+      .tab.active { background: var(--primary); color: #fff; }
+      .tab:hover:not(.active) { background: rgba(168, 85, 247, 0.2); color: var(--primary-light); }
+      
+      .search-row { display: flex; gap: 0.8rem; flex-wrap: wrap; align-items: end; }
+      .search-row label { flex: 1; min-width: 150px; }
+      
+      .source-filters { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.8rem; }
+      .source-toggle { padding: 0.4rem 0.8rem; border-radius: 20px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); cursor: pointer; font-size: 0.8rem; transition: all 0.2s; }
+      .source-toggle.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+      .source-toggle:hover { border-color: var(--primary); }
+      
+      .pagination { display: flex; gap: 0.5rem; align-items: center; justify-content: center; margin-top: 1rem; }
+      .pagination button { padding: 0.5rem 1rem; font-size: 0.85rem; }
+      .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .pagination span { color: var(--text-muted); font-size: 0.9rem; }
+      
+      .toolbar { display: flex; gap: 0.5rem; justify-content: flex-end; margin-bottom: 1rem; }
+      .toolbar button { padding: 0.5rem 0.8rem; font-size: 0.85rem; }
+      
+      .analytics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+      .chart-container { background: rgba(168, 85, 247, 0.1); border-radius: 12px; padding: 1rem; }
+      .chart-bar { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; }
+      .chart-label { width: 100px; font-size: 0.85rem; color: var(--text-muted); }
+      .chart-bar-inner { flex: 1; height: 20px; background: linear-gradient(90deg, var(--primary), var(--accent)); border-radius: 4px; min-width: 20px; transition: width 0.3s; }
+      .chart-value { font-size: 0.85rem; color: var(--primary-light); min-width: 40px; text-align: right; }
+      
+      .bookmarks-section { display: none; }
+      .bookmarks-section.show { display: block; }
+      .bookmark-btn { background: none; border: none; cursor: pointer; font-size: 1.2rem; padding: 0.2rem; }
+      .bookmark-btn.active { color: #fbbf24; }
+      
+      .loading-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero__inner">
+        <div>
+          <p class="eyebrow">InternRadar</p>
+          <h1>Internship Tracker</h1>
+        </div>
+        <div class="header-right">
+          <span id="userEmail" class="user-email"></span>
+          <button id="logoutBtn" class="logout-btn">Logout</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <div id="authOverlay" class="auth-overlay hidden">
+        <div class="auth-message">
+          <p>Please <a href="login.html">sign in</a> to access the dashboard</p>
+        </div>
+      </div>
+      <section class="panel">
+        <div class="tabs">
+          <button class="tab active" data-tab="internships">All Internships</button>
+          <button class="tab" data-tab="analytics">Analytics</button>
+          <button class="tab" data-tab="bookmarks">Bookmarks <span id="bookmarkCount">(0)</span></button>
+        </div>
+        
+        <div id="internshipsTab">
+          <div class="search-row">
+            <label>
+              Keyword
+              <input id="keyword" type="text" placeholder="ai, python, robotics..." />
+            </label>
+            <label>
+              Location
+              <input id="location" type="text" placeholder="Remote, Dhaka..." />
+            </label>
+            <label>
+              Date From
+              <input id="dateFrom" type="date" />
+            </label>
+            <label>
+              Sort By
+              <select id="sortBy">
+                <option value="latest">Latest First</option>
+                <option value="oldest">Oldest First</option>
+                <option value="company_asc">Company A-Z</option>
+                <option value="company_desc">Company Z-A</option>
+              </select>
+            </label>
+            <label>
+              Per Page
+              <select id="perPage">
+                <option value="10">10</option>
+                <option value="20" selected>20</option>
+                <option value="50">50</option>
+              </select>
+            </label>
+          </div>
+          
+          <div class="source-filters" id="sourceFilters"></div>
+          
+          <div class="actions" style="margin-top: 1rem;">
+            <button id="loadBtn" type="button">Load Internships</button>
+            <button id="refreshBtn" type="button" class="secondary">↻ Refresh</button>
+            <button id="exportBtn" type="button" class="secondary">↓ Export CSV</button>
+            <button id="resetBtn" type="button" class="secondary">Reset</button>
+          </div>
+          <p id="status" class="status">Ready</p>
+        </div>
+        
+        <div id="bookmarksTab" class="bookmarks-section">
+          <div class="toolbar">
+            <button id="exportBookmarksBtn" class="secondary">↓ Export Bookmarks</button>
+            <button id="clearBookmarksBtn" class="secondary">Clear All</button>
+          </div>
+          <p style="color: var(--text-muted);">Your saved internships will appear here.</p>
+        </div>
+        
+        <div id="analyticsTab" class="bookmarks-section">
+          <div class="analytics-grid" id="analyticsGrid">
+            <div class="chart-container">
+              <h3 style="margin: 0 0 1rem; color: var(--primary-light);">Jobs by Source</h3>
+              <div id="sourceChart"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="stats" id="statsSection">
+        <article class="panel stat-card">
+          <h3>Total Results</h3>
+          <p id="totalCount" class="metric">0</p>
+        </article>
+        <article class="panel stat-card">
+          <h3>Showing</h3>
+          <p id="showingCount" class="metric">0</p>
+        </article>
+        <article class="panel stat-card">
+          <h3>Unique Sources</h3>
+          <p id="sourceCount" class="metric">0</p>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 40px;"></th>
+                <th>Title</th>
+                <th>Company</th>
+                <th>Location</th>
+                <th>Source</th>
+                <th>Keyword</th>
+                <th>Posted</th>
+                <th>Link</th>
+              </tr>
+            </thead>
+            <tbody id="resultsBody">
+              <tr>
+                <td colspan="8" class="empty">Click "Load Internships" to fetch data</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination" id="pagination"></div>
+      </section>
+    </main>
+
+    <script src="config.js"></script>
+    <script src="supabase-lib.js"></script>
+    <script src="supabase.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

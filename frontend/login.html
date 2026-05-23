@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login | InternRadar</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .auth-container { max-width: 420px; margin: 80px auto; padding: 2rem; }
+    .auth-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 2rem; box-shadow: var(--shadow); }
+    .auth-header { text-align: center; margin-bottom: 2rem; }
+    .auth-header h1 { font-size: 1.8rem; background: linear-gradient(135deg, var(--primary-light), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .auth-header p { color: var(--text-muted); margin-top: 0.5rem; }
+    .form-group { margin-bottom: 1.2rem; }
+    .form-group label { display: block; margin-bottom: 0.4rem; color: var(--text-muted); font-size: 0.9rem; }
+    .form-group input { width: 100%; padding: 0.8rem 1rem; border: 1px solid var(--border); border-radius: 10px; background: rgba(15, 10, 26, 0.6); color: var(--text); font-size: 1rem; }
+    .form-group input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.2); }
+    .btn-full { width: 100%; padding: 1rem; font-size: 1rem; }
+    .auth-footer { text-align: center; margin-top: 1.5rem; color: var(--text-muted); }
+    .auth-footer a { color: var(--primary-light); text-decoration: none; }
+    .auth-footer a:hover { text-decoration: underline; }
+    .alert { padding: 1rem; border-radius: 10px; margin-bottom: 1rem; text-align: center; }
+    .alert-error { background: rgba(248, 113, 113, 0.2); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.3); }
+    .alert-success { background: rgba(34, 211, 238, 0.2); color: var(--accent); border: 1px solid rgba(34, 211, 238, 0.3); }
+    .alert-info { background: rgba(168, 85, 247, 0.2); color: var(--primary-light); border: 1px solid rgba(168, 85, 247, 0.3); }
+  </style>
+</head>
+<body>
+  <div class="auth-container">
+    <div class="auth-card">
+      <div class="auth-header">
+        <p class="eyebrow">InternRadar</p>
+        <h1>Welcome Back</h1>
+        <p>Sign in to access your internships</p>
+      </div>
+      
+      <div id="alertBox"></div>
+      
+      <form id="loginForm">
+        <div class="form-group">
+          <label for="email">Email Address</label>
+          <input type="email" id="email" name="email" required placeholder="you@example.com">
+        </div>
+        
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" required placeholder="Enter your password">
+        </div>
+        
+        <button type="submit" class="btn-full" id="submitBtn">Sign In</button>
+      </form>
+      
+      <div class="auth-footer">
+        Don't have an account? <a href="signup.html">Sign up</a>
+      </div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="supabase-lib.js"></script>
+  <script src="supabase.js"></script>
+  <script>
+    const form = document.getElementById("loginForm");
+    const alertBox = document.getElementById("alertBox");
+    const submitBtn = document.getElementById("submitBtn");
+    
+    function showAlert(message, type = "info") {
+      alertBox.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+    }
+    
+    function checkAuthAndLoad() {
+      let attempts = 0;
+      const checkAuth = setInterval(() => {
+        attempts++;
+        if (window.auth && !window.auth.isLoading) {
+          clearInterval(checkAuth);
+          showAlert("Ready! You can sign in now.", "success");
+        } else if (attempts >= 15) {
+          clearInterval(checkAuth);
+          showAlert("Auth failed to load. Refresh the page or check browser console (F12).", "error");
+        }
+      }, 500);
+    }
+
+    async function upsertProfile(user) {
+      if (!window.supabaseClient || !user) {
+        console.warn("[InternRadar] Cannot upsert profile: missing supabaseClient or user");
+        return;
+      }
+
+      const payload = {
+        id: user.id,
+        email: user.email,
+        full_name: user.user_metadata?.full_name || "",
+        updated_at: new Date().toISOString()
+      };
+
+      console.log("[InternRadar] Upserting profile for:", user.email);
+      const { error } = await window.supabaseClient
+        .from("profiles")
+        .upsert(payload, { onConflict: "id" });
+
+      if (error) {
+        console.warn("[InternRadar] Profile upsert failed:", error.message, error);
+      } else {
+        console.log("[InternRadar] Profile upserted successfully for:", user.email);
+      }
+    }
+    
+    checkAuthAndLoad();
+    
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      
+      if (!window.auth) {
+        showAlert("Auth not loaded yet. Please wait or refresh.", "error");
+        return;
+      }
+      
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+      
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Signing in...";
+      
+      try {
+        const data = await window.auth.signIn(email, password);
+        const user = data?.user || data?.session?.user;
+        
+        if (!user) {
+          showAlert("Sign in succeeded but no user data returned. Try again.", "error");
+          return;
+        }
+
+        if (!user.email_confirmed_at) {
+          await window.auth.signOut();
+          showAlert("Please verify your email first. Check your inbox for the verification link.", "error");
+        } else {
+          await upsertProfile(user);
+          window.location.href = "index.html";
+        }
+      } catch (error) {
+        console.error("[InternRadar] Login error:", error);
+        showAlert(error.message, "error");
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Sign In";
+      }
+    });
+  </script>
+</body>
+</html>

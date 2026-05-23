@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign Up | InternRadar</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .auth-container { max-width: 420px; margin: 80px auto; padding: 2rem; }
+    .auth-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 2rem; box-shadow: var(--shadow); }
+    .auth-header { text-align: center; margin-bottom: 2rem; }
+    .auth-header h1 { font-size: 1.8rem; background: linear-gradient(135deg, var(--primary-light), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .auth-header p { color: var(--text-muted); margin-top: 0.5rem; }
+    .form-group { margin-bottom: 1.2rem; }
+    .form-group label { display: block; margin-bottom: 0.4rem; color: var(--text-muted); font-size: 0.9rem; }
+    .form-group input { width: 100%; padding: 0.8rem 1rem; border: 1px solid var(--border); border-radius: 10px; background: rgba(15, 10, 26, 0.6); color: var(--text); font-size: 1rem; }
+    .form-group input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.2); }
+    .btn-full { width: 100%; padding: 1rem; font-size: 1rem; }
+    .auth-footer { text-align: center; margin-top: 1.5rem; color: var(--text-muted); }
+    .auth-footer a { color: var(--primary-light); text-decoration: none; }
+    .auth-footer a:hover { text-decoration: underline; }
+    .alert { padding: 1rem; border-radius: 10px; margin-bottom: 1rem; text-align: center; }
+    .alert-error { background: rgba(248, 113, 113, 0.2); color: #f87171; border: 1px solid rgba(248, 113, 113, 0.3); }
+    .alert-success { background: rgba(34, 211, 238, 0.2); color: var(--accent); border: 1px solid rgba(34, 211, 238, 0.3); }
+    .alert-info { background: rgba(168, 85, 247, 0.2); color: var(--primary-light); border: 1px solid rgba(168, 85, 247, 0.3); }
+    .password-hint { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.3rem; }
+  </style>
+</head>
+<body>
+  <div class="auth-container">
+    <div class="auth-card">
+      <div class="auth-header">
+        <p class="eyebrow">InternRadar</p>
+        <h1>Create Account</h1>
+        <p>Sign up to start tracking internships</p>
+      </div>
+      
+      <div id="alertBox"></div>
+      
+      <form id="signupForm">
+        <div class="form-group">
+          <label for="email">Email Address</label>
+          <input type="email" id="email" name="email" required placeholder="you@example.com">
+        </div>
+        
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" required placeholder="Create a strong password" minlength="6">
+          <p class="password-hint">Must be at least 6 characters</p>
+        </div>
+        
+        <div class="form-group">
+          <label for="confirmPassword">Confirm Password</label>
+          <input type="password" id="confirmPassword" name="confirmPassword" required placeholder="Confirm your password">
+        </div>
+        
+        <button type="submit" class="btn-full" id="submitBtn">Create Account</button>
+      </form>
+      
+      <div class="auth-footer">
+        Already have an account? <a href="login.html">Sign in</a>
+      </div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="supabase-lib.js"></script>
+  <script src="supabase.js"></script>
+  <script>
+    const form = document.getElementById("signupForm");
+    const alertBox = document.getElementById("alertBox");
+    const submitBtn = document.getElementById("submitBtn");
+    
+    function showAlert(message, type = "info") {
+      alertBox.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+    }
+    
+    function checkAuthAndLoad() {
+      const checkAuth = setInterval(() => {
+        if (window.auth) {
+          clearInterval(checkAuth);
+          showAlert("Ready! You can sign up now.", "success");
+        }
+      }, 500);
+      
+      setTimeout(() => {
+        clearInterval(checkAuth);
+        if (!window.auth) {
+          showAlert("Auth failed to load. Open browser console (F12) for details.", "error");
+        }
+      }, 5000);
+    }
+    
+    checkAuthAndLoad();
+    
+    async function upsertProfile(user) {
+      if (!window.supabaseClient || !user) {
+        return;
+      }
+
+      const payload = {
+        id: user.id,
+        email: user.email,
+        full_name: user.user_metadata?.full_name || "",
+        updated_at: new Date().toISOString()
+      };
+
+      const { error } = await window.supabaseClient
+        .from("profiles")
+        .upsert(payload, { onConflict: "id" });
+
+      if (error) {
+        console.warn("[InternRadar] Profile upsert failed:", error.message);
+      } else {
+        console.log("[InternRadar] Profile created for:", user.email);
+      }
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      
+      if (!window.auth) {
+        showAlert("Auth not loaded yet. Please wait or refresh.", "error");
+        return;
+      }
+      
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+      const confirmPassword = document.getElementById("confirmPassword").value;
+      
+      if (password !== confirmPassword) {
+        showAlert("Passwords do not match", "error");
+        return;
+      }
+      
+      if (password.length < 6) {
+        showAlert("Password must be at least 6 characters", "error");
+        return;
+      }
+      
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Creating account...";
+      
+      try {
+        const data = await window.auth.signUp(email, password);
+        
+        // If user is auto-confirmed, create profile immediately
+        const user = data?.user;
+        if (user && user.email_confirmed_at) {
+          await upsertProfile(user);
+        }
+        
+        showAlert("Account created! Check your email to verify your account.", "success");
+        form.reset();
+      } catch (error) {
+        console.error("[InternRadar] Signup error:", error);
+        showAlert(error.message, "error");
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Create Account";
+      }
+    });
+  </script>
+</body>
+</html>
