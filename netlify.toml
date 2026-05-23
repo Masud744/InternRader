@@ -4,7 +4,7 @@
 # Forward /api requests to Render backend
 [[redirects]]
   from = "/api/*"
-  to = "https://internradar-backend.onrender.com/:splat" # NOTE: We will update this after you deploy to Render!
+  to = "https://internrader-backend.onrender.com/:splat" # Updated to match your exact Render app name
   status = 200
   force = true
 
