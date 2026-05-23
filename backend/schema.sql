@@ -22,6 +22,9 @@ create table if not exists profiles (
     id uuid references auth.users(id) on delete cascade primary key,
     email text not null,
     full_name text,
+    interest_area text,
+    experience_level text,
+    university text,
     created_at timestamptz default now(),
     updated_at timestamptz default now()
 );
