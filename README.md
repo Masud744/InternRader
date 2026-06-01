@@ -111,9 +111,20 @@ InternRadar/
 ## Screenshots
 
 ### Dashboard Overview
-![Dashboard Preview 1](images/dasshboard_preview1.png)
+![Dashboard Preview 1](images/dashboard_preview1.png)
 ![Dashboard Preview 2](images/dashboard_preview2.png)
 Shows the main internship listings, hero banner, search filters, and real-time statistics.
+
+### Analytics & Tracking
+![Analytics Dashboard](images/analytist.png)
+![Application Tracker](images/tracker.png)
+![Bookmarks](images/bookmarks.png)
+Comprehensive analytics overview and a kanban-style application tracker for saved internships.
+
+### Profile & AI Features
+![User Profile](images/profile.png)
+![AI Cover Letter Generator](images/ai_cover_latter_generator.png)
+Manage your profile and generate tailored cover letters using Gemini AI.
 
 ### Authentication Flow
 ![Login Page](images/login.png)

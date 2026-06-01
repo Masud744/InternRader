@@ -8,6 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   </head>
   <body>
 
@@ -62,12 +63,24 @@
             </div>
             <span>Analytics</span>
           </button>
+          <button class="nav-btn" data-tab="tracker">
+            <div class="nav-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            </div>
+            <span>Tracker</span>
+          </button>
           <button class="nav-btn" data-tab="bookmarks">
             <div class="nav-icon">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
             </div>
             <span>Bookmarks</span>
             <span id="bookmarkCount" class="badge">0</span>
+          </button>
+          <button class="nav-btn" data-tab="profile">
+            <div class="nav-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            </div>
+            <span>Profile & CV</span>
           </button>
         </nav>
 
@@ -101,7 +114,12 @@
               <span id="pageTitle" class="breadcrumb-current">DASHBOARD OVERVIEW</span>
             </div>
           </div>
-          <div class="top-bar-right">
+          <div class="top-bar-right" style="display: flex; align-items: center; gap: 1rem;">
+            <button id="themeToggleBtn" style="background: transparent; border: none; cursor: pointer; color: var(--text-muted); display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%;">
+              <svg id="themeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+              </svg>
+            </button>
             <div class="top-clock" id="topClock">00:00:00</div>
           </div>
         </header>
@@ -337,7 +355,7 @@
         </div>
 
         <!-- ══════════════════════════════════════════ -->
-        <!--  ANALYTICS TAB                             -->
+        <!--  ANALYTICS TAB (Enhanced with Chart.js)   -->
         <!-- ══════════════════════════════════════════ -->
         <div id="analyticsTab" class="tab-content hidden">
           <section class="panel">
@@ -346,20 +364,148 @@
                 <div class="panel-indicator"></div>
                 <h2 class="panel-title">ANALYTICS OVERVIEW</h2>
               </div>
+              <span class="chart-badge">LIVE DATA</span>
             </div>
-            <div class="analytics-grid" id="analyticsGrid">
-              <div class="chart-container">
-                <div class="chart-header">
-                  <h3>JOBS BY SOURCE</h3>
-                  <span class="chart-badge">LIVE</span>
+
+            <div class="analytics-grid" style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1.5rem; padding: 1.5rem; min-height: calc(100vh - 160px);">
+              <!-- Doughnut: Jobs by Source -->
+              <div class="chart-container" style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; display: flex; flex-direction: column;">
+                <div class="chart-header" style="margin-bottom: 1rem;">
+                  <h3 style="color: var(--text); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Jobs by Source</h3>
                 </div>
-                <div id="sourceChart"></div>
+                <div style="position: relative; flex: 1; width: 100%; min-height: 200px;"><canvas id="sourceChartCanvas"></canvas></div>
+              </div>
+              <!-- Bar: Top Locations -->
+              <div class="chart-container" style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; display: flex; flex-direction: column;">
+                <div class="chart-header" style="margin-bottom: 1rem;">
+                  <h3 style="color: var(--text); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Top Locations</h3>
+                </div>
+                <div style="position: relative; flex: 1; width: 100%; min-height: 200px;"><canvas id="locationChartCanvas"></canvas></div>
+              </div>
+              <!-- Bar: In-Demand Skills -->
+              <div class="chart-container" style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; display: flex; flex-direction: column;">
+                <div class="chart-header" style="margin-bottom: 1rem;">
+                  <h3 style="color: var(--text); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">In-Demand Skills</h3>
+                </div>
+                <div style="position: relative; flex: 1; width: 100%; min-height: 200px;"><canvas id="keywordChartCanvas"></canvas></div>
+              </div>
+              <!-- Line: Jobs Over Time -->
+              <div class="chart-container" style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; display: flex; flex-direction: column;">
+                <div class="chart-header" style="margin-bottom: 1rem;">
+                  <h3 style="color: var(--text); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Jobs Over Time</h3>
+                </div>
+                <div style="position: relative; flex: 1; width: 100%; min-height: 200px;"><canvas id="timelineChartCanvas"></canvas></div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- ══════════════════════════════════════════ -->
+        <!--  TRACKER TAB (Kanban Board)                -->
+        <!-- ══════════════════════════════════════════ -->
+        <div id="trackerTab" class="tab-content hidden">
+          <section class="panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <div class="panel-indicator"></div>
+                <h2 class="panel-title">APPLICATION TRACKER</h2>
+              </div>
+            </div>
+            <p style="padding: 0 1.5rem 1rem; color: var(--text-muted); font-size: 0.8rem;">Track the status of your saved internships through the application pipeline.</p>
+            <div class="kanban-board" id="kanbanBoard" style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.75rem; padding: 0 1.5rem 1.5rem;">
+              <div class="kanban-column" data-status="Saved">
+                <div class="kanban-column-header" style="background: #3b82f6; color: #fff; padding: 0.5rem 0.75rem; border-radius: 6px 6px 0 0; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;">📌 Saved <span class="kanban-count" id="countSaved">0</span></div>
+                <div class="kanban-items" id="itemsSaved" style="padding: 0.5rem; height: calc(100vh - 280px); overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-top: none; border-radius: 0 0 6px 6px;"></div>
+              </div>
+              <div class="kanban-column" data-status="Applied">
+                <div class="kanban-column-header" style="background: #f59e0b; color: #fff; padding: 0.5rem 0.75rem; border-radius: 6px 6px 0 0; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;">📤 Applied <span class="kanban-count" id="countApplied">0</span></div>
+                <div class="kanban-items" id="itemsApplied" style="padding: 0.5rem; height: calc(100vh - 280px); overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-top: none; border-radius: 0 0 6px 6px;"></div>
+              </div>
+              <div class="kanban-column" data-status="Interviewing">
+                <div class="kanban-column-header" style="background: #8b5cf6; color: #fff; padding: 0.5rem 0.75rem; border-radius: 6px 6px 0 0; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;">🎯 Interviewing <span class="kanban-count" id="countInterviewing">0</span></div>
+                <div class="kanban-items" id="itemsInterviewing" style="padding: 0.5rem; height: calc(100vh - 280px); overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-top: none; border-radius: 0 0 6px 6px;"></div>
+              </div>
+              <div class="kanban-column" data-status="Accepted">
+                <div class="kanban-column-header" style="background: #10b981; color: #fff; padding: 0.5rem 0.75rem; border-radius: 6px 6px 0 0; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;">✅ Accepted <span class="kanban-count" id="countAccepted">0</span></div>
+                <div class="kanban-items" id="itemsAccepted" style="padding: 0.5rem; height: calc(100vh - 280px); overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-top: none; border-radius: 0 0 6px 6px;"></div>
+              </div>
+              <div class="kanban-column" data-status="Rejected">
+                <div class="kanban-column-header" style="background: #ef4444; color: #fff; padding: 0.5rem 0.75rem; border-radius: 6px 6px 0 0; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;">❌ Rejected <span class="kanban-count" id="countRejected">0</span></div>
+                <div class="kanban-items" id="itemsRejected" style="padding: 0.5rem; height: calc(100vh - 280px); overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-top: none; border-radius: 0 0 6px 6px;"></div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- ══════════════════════════════════════════ -->
+        <!--  PROFILE TAB                               -->
+        <!-- ══════════════════════════════════════════ -->
+        <div id="profileTab" class="tab-content hidden">
+          <section class="panel" style="max-width: 800px; margin: 0 auto;">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <div class="panel-indicator"></div>
+                <h2 class="panel-title">YOUR PROFILE & CV</h2>
+              </div>
+            </div>
+            <div style="padding: 1.5rem;">
+              <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">Fill out your details and paste your resume text here. The AI will use this information to write highly personalized cover letters tailored to your exact background.</p>
+              
+              <div class="form-group" style="margin-bottom: 1.2rem;">
+                <label for="profileFullName">Full Name</label>
+                <input type="text" id="profileFullName" placeholder="e.g. John Doe">
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.2rem;">
+                <div class="form-group">
+                  <label for="profileUniversity">University / College</label>
+                  <input type="text" id="profileUniversity" placeholder="e.g. MIT">
+                </div>
+                <div class="form-group">
+                  <label for="profileExperience">Experience Level</label>
+                  <select id="profileExperience">
+                    <option value="Student">Student</option>
+                    <option value="New Grad">New Grad</option>
+                    <option value="Junior">Junior (1-2 years)</option>
+                    <option value="Mid-Level">Mid-Level (3+ years)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-group" style="margin-bottom: 1.5rem;">
+                <label for="profileResumeText">Resume / CV Content (Paste Text)</label>
+                <textarea id="profileResumeText" rows="12" placeholder="Paste your full resume text here..." style="width: 100%; padding: 0.8rem; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-family: var(--font-mono); font-size: 0.75rem; resize: vertical; line-height: 1.5;"></textarea>
+              </div>
+
+              <div style="display: flex; justify-content: flex-end; align-items: center; gap: 1rem;">
+                <span id="profileSaveStatus" style="color: var(--green); font-size: 0.8rem; display: none;">✓ Profile saved successfully!</span>
+                <button id="saveProfileBtn" class="btn-primary" style="padding: 0.6rem 1.5rem;">💾 Save Profile</button>
               </div>
             </div>
           </section>
         </div>
 
       </main>
+    </div>
+
+    <!-- ══════════════════════════════════════════ -->
+    <!-- COVER LETTER MODAL                         -->
+    <!-- ══════════════════════════════════════════ -->
+    <div id="coverLetterModal" class="modal-overlay hidden" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 9999; display: flex; align-items: center; justify-content: center;">
+      <div class="modal-content" style="background: var(--card); border: 1px solid var(--border); border-radius: 12px; width: 90%; max-width: 700px; max-height: 80vh; overflow-y: auto; padding: 2rem; position: relative;">
+        <button id="closeCoverLetterModal" style="position: absolute; top: 1rem; right: 1rem; background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.5rem;">✕</button>
+        <h2 style="color: var(--text); font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem;">✨ AI Cover Letter Generator</h2>
+        <p id="coverLetterJobTitle" style="color: var(--text-muted); font-size: 0.8rem; margin-bottom: 1.25rem;"></p>
+        <div id="coverLetterLoading" style="text-align: center; padding: 3rem 0; color: var(--text-muted);">
+          <div style="font-size: 2rem; margin-bottom: 0.5rem;">⏳</div>
+          <p>Generating your personalized cover letter...</p>
+        </div>
+        <div id="coverLetterContent" class="hidden" style="background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; white-space: pre-wrap; color: var(--text); font-size: 0.85rem; line-height: 1.7;"></div>
+        <div id="coverLetterActions" class="hidden" style="display: flex; gap: 0.75rem; margin-top: 1rem;">
+          <button id="copyCoverLetter" class="btn-primary" style="font-size: 0.8rem; padding: 0.5rem 1.25rem;">📋 Copy to Clipboard</button>
+          <button id="regenerateCoverLetter" class="btn-secondary" style="font-size: 0.8rem; padding: 0.5rem 1.25rem;">🔄 Regenerate</button>
+        </div>
+      </div>
     </div>
 
     <script src="config.js"></script>

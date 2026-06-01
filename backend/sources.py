@@ -8,7 +8,7 @@ from urllib.parse import quote_plus, urljoin
 
 from bs4 import BeautifulSoup
 
-from backend.http import build_session, fetch_html
+from backend.http_utils import build_session, fetch_html
 from backend.models import Internship
 
 logger = logging.getLogger(__name__)

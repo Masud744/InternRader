@@ -25,6 +25,7 @@ create table if not exists profiles (
     interest_area text,
     experience_level text,
     university text,
+    resume_text text,
     created_at timestamptz default now(),
     updated_at timestamptz default now()
 );
@@ -33,6 +34,7 @@ create table if not exists saved_jobs (
     id uuid default gen_random_uuid() primary key,
     user_id uuid references auth.users(id) on delete cascade not null,
     internship_id uuid references internships(id) on delete cascade not null,
+    status text not null default 'Saved' check (status in ('Saved', 'Applied', 'Interviewing', 'Accepted', 'Rejected')),
     created_at timestamptz default now(),
     unique(user_id, internship_id)
 );

@@ -8,7 +8,7 @@
 
 :root {
   /* ── Color System ── */
-  --bg:           #f0f4f8; /* Light background */
+  --bg:           #071326; /* Dark background to match cards */
   --sidebar-bg:   #0b1d3a;
   --card:         #0f294d; /* Hero banner color */
   --card-hover:   #143561;
@@ -40,8 +40,26 @@
   --shadow-lg: 0 10px 25px rgba(0, 0, 0, 0.15);
 }
 
+.dark-theme {
+  --bg:           #020617; /* Very dark slate background */
+  --sidebar-bg:   #091325;
+  --card:         #0f172a;
+  --card-hover:   #1e293b;
+  --border:       #1e293b;
+  --border-light: #334155;
+  --sidebar-border: #1e293b;
+  --text:         #f8fafc;
+  --text-muted:   #94a3b8;
+  --text-dim:     #64748b;
+  --sidebar-text: #f8fafc;
+  --sidebar-muted: #94a3b8;
+  --shadow:       0 4px 15px rgba(0, 0, 0, 0.4);
+  --shadow-lg:    0 10px 25px rgba(0, 0, 0, 0.5);
+}
+
 /* ── RESET ─────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+.hidden { display: none !important; }
 
 body {
   font-family: var(--font-ui);

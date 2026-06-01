@@ -65,13 +65,6 @@ async function handleLogout() {
       logoutBtn.innerHTML = '<span class="loading-spinner" style="border-width: 1px; width: 10px; height: 10px;"></span> OUT';
       logoutBtn.style.pointerEvents = 'none';
     }
-    
-    // Force clear any supabase auth tokens locally just in case
-    for (let key in localStorage) {
-      if (key.startsWith('sb-') && key.endsWith('-auth-token')) {
-        localStorage.removeItem(key);
-      }
-    }
 
     if (window.auth && typeof window.auth.signOut === 'function') {
       await window.auth.signOut();
@@ -79,7 +72,17 @@ async function handleLogout() {
   } catch (error) {
     console.error("Logout error:", error);
   } finally {
-    window.location.replace("login.html");
+    // Force clear any supabase auth tokens locally just in case
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('sb-') && key.endsWith('-auth-token')) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+    
+    window.location.href = "login.html";
   }
 }
 
@@ -207,7 +210,8 @@ function renderRows(items) {
   
   const rows = items
     .map((item) => {
-      const link = item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" onclick="trackClick('${item.id}')">Open</a>` : "—";
+      const link = item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" class="btn-ghost" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" onclick="trackClick('${item.id}')">Open</a>` : "—";
+      const aiBtn = `<button class="btn-primary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-left: 0.25rem;" onclick='openCoverLetterModal(${JSON.stringify(item).replace(/'/g, "&#39;")})'>✨ AI</button>`;
       const title = item.title || "—";
       const company = item.company || "—";
       const location = item.location || "—";
@@ -218,14 +222,14 @@ function renderRows(items) {
       
       return `
         <tr>
-          <td><button class="bookmark-btn ${bookmarked ? 'active' : ''}" onclick='toggleBookmark(${JSON.stringify(item)})'>★</button></td>
+          <td><button class="bookmark-btn ${bookmarked ? 'active' : ''}" onclick='toggleBookmark(${JSON.stringify(item).replace(/'/g, "&#39;")})'>★</button></td>
           <td>${escapeHtml(title)}</td>
           <td>${escapeHtml(company)}</td>
           <td>${escapeHtml(location)}</td>
           <td><span class="source-tag">${escapeHtml(source)}</span></td>
           <td>${escapeHtml(keyword)}</td>
           <td>${escapeHtml(postedDate)}</td>
-          <td>${link}</td>
+          <td style="white-space: nowrap;">${link}${aiBtn}</td>
         </tr>
       `;
     })
@@ -268,30 +272,74 @@ function updateStats(items, total) {
   sourceCountEl.textContent = String(sources.size);
 }
 
+// Chart.js instances
+let chartInstances = {};
+
+function destroyCharts() {
+  Object.values(chartInstances).forEach(c => { if (c) c.destroy(); });
+  chartInstances = {};
+}
+
+const CHART_COLORS = ['#3b82f6','#8b5cf6','#f59e0b','#10b981','#ef4444','#ec4899','#06b6d4','#84cc16','#f97316','#6366f1'];
+
 function renderAnalytics(stats) {
-  const total = stats.total || 0;
+  destroyCharts();
   const bySource = stats.by_source || {};
-  
-  let chartHtml = "";
-  
-  Object.entries(bySource)
-    .sort((a, b) => b[1] - a[1])
-    .forEach(([source, count]) => {
-      const percent = total > 0 ? (count / total) * 100 : 0;
-      chartHtml += `
-        <div class="chart-bar">
-          <span class="chart-label">${escapeHtml(source)}</span>
-          <div class="chart-bar-inner" style="width: ${percent}%"></div>
-          <span class="chart-value">${count}</span>
-        </div>
-      `;
+  const byLocation = stats.by_location || {};
+  const byKeyword = stats.by_keyword || {};
+  const byDate = stats.by_date || {};
+
+  // 1. Doughnut – Jobs by Source
+  const srcCtx = document.getElementById("sourceChartCanvas");
+  if (srcCtx) {
+    chartInstances.source = new Chart(srcCtx, {
+      type: "doughnut",
+      data: {
+        labels: Object.keys(bySource),
+        datasets: [{ data: Object.values(bySource), backgroundColor: CHART_COLORS, borderWidth: 0 }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim(), font: { size: 11 } } } } }
     });
-  
-  if (!chartHtml) {
-    chartHtml = "<p style='color: var(--text-muted);'>No data available</p>";
   }
-  
-  document.getElementById("sourceChart").innerHTML = chartHtml;
+
+  // 2. Bar – Top Locations
+  const locCtx = document.getElementById("locationChartCanvas");
+  if (locCtx) {
+    chartInstances.location = new Chart(locCtx, {
+      type: "bar",
+      data: {
+        labels: Object.keys(byLocation),
+        datasets: [{ label: "Jobs", data: Object.values(byLocation), backgroundColor: "#3b82f6", borderRadius: 4 }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim() }, grid: { color: "rgba(255,255,255,0.05)" } }, y: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim(), font: { size: 10 } }, grid: { display: false } } } }
+    });
+  }
+
+  // 3. Bar – In-Demand Skills/Keywords
+  const kwCtx = document.getElementById("keywordChartCanvas");
+  if (kwCtx) {
+    chartInstances.keyword = new Chart(kwCtx, {
+      type: "bar",
+      data: {
+        labels: Object.keys(byKeyword),
+        datasets: [{ label: "Jobs", data: Object.values(byKeyword), backgroundColor: CHART_COLORS, borderRadius: 4 }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim(), font: { size: 9 }, maxRotation: 45 }, grid: { display: false } }, y: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim() }, grid: { color: "rgba(255,255,255,0.05)" } } } }
+    });
+  }
+
+  // 4. Line – Jobs Over Time
+  const timeCtx = document.getElementById("timelineChartCanvas");
+  if (timeCtx) {
+    chartInstances.timeline = new Chart(timeCtx, {
+      type: "line",
+      data: {
+        labels: Object.keys(byDate),
+        datasets: [{ label: "New Jobs", data: Object.values(byDate), borderColor: "#8b5cf6", backgroundColor: "rgba(139,92,246,0.1)", fill: true, tension: 0.4, pointRadius: 2 }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim(), font: { size: 9 }, maxRotation: 45 }, grid: { display: false } }, y: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim() }, grid: { color: "rgba(255,255,255,0.05)" } } } }
+    });
+  }
 }
 
 async function loadInternships() {
@@ -360,12 +408,12 @@ async function loadSources() {
 
 async function loadAnalytics() {
   try {
-    const response = await fetch(`${DEFAULT_BASE}/internships/stats`);
+    const response = await fetch(`${DEFAULT_BASE}/analytics`);
     if (!response.ok) return;
     const data = await response.json();
     renderAnalytics(data);
   } catch (e) {
-    document.getElementById("sourceChart").innerHTML = "<p style='color: var(--text-muted);'>Failed to load analytics</p>";
+    console.error("Analytics load failed:", e);
   }
 }
 
@@ -418,12 +466,15 @@ function showTab(tabName) {
     if (tabName === "internships") pageTitle.textContent = "DASHBOARD OVERVIEW";
     else if (tabName === "bookmarks") pageTitle.textContent = "SAVED INTERNSHIPS";
     else if (tabName === "analytics") pageTitle.textContent = "ANALYTICS OVERVIEW";
+    else if (tabName === "tracker") pageTitle.textContent = "APPLICATION TRACKER";
   }
   
   if (tabName === "bookmarks") {
     renderBookmarksTab();
   } else if (tabName === "analytics") {
     loadAnalytics();
+  } else if (tabName === "tracker") {
+    loadTrackerBoard();
   }
 }
 
@@ -438,17 +489,18 @@ function renderBookmarksTab() {
   }
 
   const rows = bookmarks.map((item) => {
-    const link = item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer">Open</a>` : "—";
+    const link = item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" class="btn-ghost" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" onclick="trackClick('${item.id}')">Open</a>` : "—";
+    const aiBtn = `<button class="btn-primary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-left: 0.25rem;" onclick='openCoverLetterModal(${JSON.stringify(item).replace(/'/g, "&#39;")})'>✨ AI</button>`;
     return `
       <tr>
-        <td><button class="bookmark-btn active" onclick='toggleBookmark(${JSON.stringify(item)})'>★</button></td>
+        <td><button class="bookmark-btn active" onclick='toggleBookmark(${JSON.stringify(item).replace(/'/g, "&#39;")})'>★</button></td>
         <td>${escapeHtml(item.title || "—")}</td>
         <td>${escapeHtml(item.company || "—")}</td>
         <td>${escapeHtml(item.location || "—")}</td>
         <td><span class="source-tag">${escapeHtml(item.source || "—")}</span></td>
         <td>${escapeHtml(item.keyword || "—")}</td>
         <td>${escapeHtml(item.posted_date || "—")}</td>
-        <td>${link}</td>
+        <td style="white-space: nowrap;">${link}${aiBtn}</td>
       </tr>
     `;
   }).join("");
@@ -496,6 +548,175 @@ document.getElementById("clearBookmarksBtn")?.addEventListener("click", () => {
   }
 });
 
+// State
+let allInternships = [];
+let currentPage = 1;
+const itemsPerPage = 20;
+
+// ══════════════════════════════════════════
+// KANBAN BOARD (Application Tracker)
+// ══════════════════════════════════════════
+
+function loadTrackerBoard() {
+  const bookmarks = getBookmarks();
+  const statuses = ["Saved", "Applied", "Interviewing", "Accepted", "Rejected"];
+
+  statuses.forEach(status => {
+    const container = document.getElementById(`items${status}`);
+    const countEl = document.getElementById(`count${status}`);
+    if (!container) return;
+
+    const items = bookmarks.filter(b => (b.status || "Saved") === status);
+    if (countEl) countEl.textContent = items.length;
+
+    if (!items.length) {
+      container.innerHTML = `<p style="color: var(--text-dim); font-size: 0.7rem; text-align: center; padding: 1rem 0;">No items</p>`;
+      return;
+    }
+
+    container.innerHTML = items.map(item => `
+      <div class="kanban-card" style="background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem; margin-bottom: 0.5rem; cursor: default;">
+        <p style="color: var(--text); font-size: 0.75rem; font-weight: 500; margin-bottom: 0.25rem; line-height: 1.3;">${escapeHtml(item.title || "Untitled")}</p>
+        <p style="color: var(--text-muted); font-size: 0.65rem; margin-bottom: 0.5rem;">${escapeHtml(item.company || "—")}</p>
+        <select class="kanban-status-select" data-id="${escapeHtml(item.id || item.link)}" style="width: 100%; padding: 0.25rem; font-size: 0.65rem; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer;">
+          ${statuses.map(s => `<option value="${s}" ${s === status ? "selected" : ""}>${s}</option>`).join("")}
+        </select>
+      </div>
+    `).join("");
+  });
+
+  // Bind status change events
+  document.querySelectorAll(".kanban-status-select").forEach(sel => {
+    sel.addEventListener("change", (e) => {
+      const itemId = e.target.dataset.id;
+      const newStatus = e.target.value;
+      const bookmarks = getBookmarks();
+      const idx = bookmarks.findIndex(b => (b.id || b.link) === itemId);
+      if (idx !== -1) {
+        bookmarks[idx].status = newStatus;
+        saveBookmarks(bookmarks);
+        loadTrackerBoard();
+      }
+    });
+  });
+}
+
+
+// ══════════════════════════════════════════
+// AI COVER LETTER GENERATOR
+// ══════════════════════════════════════════
+
+let currentCoverLetterJob = null;
+
+function openCoverLetterModal(job) {
+  currentCoverLetterJob = job;
+  const modal = document.getElementById("coverLetterModal");
+  const titleEl = document.getElementById("coverLetterJobTitle");
+  const loadingEl = document.getElementById("coverLetterLoading");
+  const contentEl = document.getElementById("coverLetterContent");
+  const actionsEl = document.getElementById("coverLetterActions");
+
+  if (!modal) return;
+
+  titleEl.textContent = `For: ${job.title} at ${job.company}`;
+  loadingEl.classList.remove("hidden");
+  contentEl.classList.add("hidden");
+  actionsEl.classList.add("hidden");
+  modal.classList.remove("hidden");
+
+  generateCoverLetter(job);
+}
+
+async function generateCoverLetter(job) {
+  const loadingEl = document.getElementById("coverLetterLoading");
+  const contentEl = document.getElementById("coverLetterContent");
+  const actionsEl = document.getElementById("coverLetterActions");
+
+  try {
+    const profileName = document.getElementById("profileFullName")?.value || "";
+    const profileResume = document.getElementById("profileResumeText")?.value || "";
+    
+    const resp = await fetch(`${DEFAULT_BASE}/generate-cover-letter`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: job.title || "",
+        company: job.company || "",
+        location: job.location || "",
+        user_name: profileName || localStorage.getItem("userName") || "Applicant",
+        user_skills: profileResume || localStorage.getItem("userSkills") || "",
+      }),
+    });
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+    const data = await resp.json();
+
+    contentEl.textContent = data.cover_letter || "No content generated.";
+    loadingEl.classList.add("hidden");
+    contentEl.classList.remove("hidden");
+    actionsEl.classList.remove("hidden");
+  } catch (err) {
+    loadingEl.innerHTML = `<div style="color: #ef4444;">❌ Failed to generate: ${err.message}</div>`;
+  }
+}
+
+// Cover Letter modal event listeners
+document.getElementById("closeCoverLetterModal")?.addEventListener("click", () => {
+  document.getElementById("coverLetterModal")?.classList.add("hidden");
+});
+
+document.getElementById("copyCoverLetter")?.addEventListener("click", () => {
+  const text = document.getElementById("coverLetterContent")?.textContent || "";
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById("copyCoverLetter");
+    btn.textContent = "✅ Copied!";
+    setTimeout(() => btn.textContent = "📋 Copy to Clipboard", 2000);
+  });
+});
+
+document.getElementById("regenerateCoverLetter")?.addEventListener("click", () => {
+  if (currentCoverLetterJob) {
+    document.getElementById("coverLetterLoading").classList.remove("hidden");
+    document.getElementById("coverLetterContent").classList.add("hidden");
+    document.getElementById("coverLetterActions").classList.add("hidden");
+    generateCoverLetter(currentCoverLetterJob);
+  }
+});
+
+// Make openCoverLetterModal globally accessible
+window.openCoverLetterModal = openCoverLetterModal;
+
+
+// ══════════════════════════════════════════
+// THEME TOGGLE
+// ══════════════════════════════════════════
+
+function initThemeToggle() {
+  const toggleBtn = document.getElementById('themeToggleBtn');
+  const themeIcon = document.getElementById('themeIcon');
+  if (!toggleBtn || !themeIcon) return;
+
+  const currentTheme = localStorage.getItem('theme') || 'light';
+  if (currentTheme === 'dark') {
+    document.body.classList.add('dark-theme');
+    themeIcon.innerHTML = '<circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>';
+  }
+
+  toggleBtn.addEventListener('click', () => {
+    document.body.classList.toggle('dark-theme');
+    if (document.body.classList.contains('dark-theme')) {
+      localStorage.setItem('theme', 'dark');
+      themeIcon.innerHTML = '<circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>';
+    } else {
+      localStorage.setItem('theme', 'light');
+      themeIcon.innerHTML = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>';
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  initThemeToggle();
+});
+
 perPageSelect.addEventListener("change", () => {
   currentOffset = 0;
   loadInternships();
@@ -519,6 +740,7 @@ async function initAuthListeners() {
 }
 
 initAuthListeners();
+initThemeToggle();
 
 (async function init() {
   console.log("[InternRadar] Initializing...");
@@ -538,4 +760,81 @@ initAuthListeners();
   // (internships table has no RLS restrictions)
   updateBookmarkCount();
   loadInternships();
+  if (isAuthenticated) {
+    loadProfile();
+  }
 })();
+
+// ══════════════════════════════════════════
+// PROFILE LOGIC
+// ══════════════════════════════════════════
+
+async function loadProfile() {
+  if (!window.supabaseClient) return;
+  const user = await window.auth.getUser();
+  if (!user) return;
+
+  try {
+    const { data, error } = await window.supabaseClient
+      .from('profiles')
+      .select('*')
+      .eq('id', user.id)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      console.error("Error loading profile:", error);
+      return;
+    }
+    
+    if (data) {
+      if (document.getElementById("profileFullName")) document.getElementById("profileFullName").value = data.full_name || "";
+      if (document.getElementById("profileUniversity")) document.getElementById("profileUniversity").value = data.university || "";
+      if (document.getElementById("profileExperience")) document.getElementById("profileExperience").value = data.experience_level || "Student";
+      if (document.getElementById("profileResumeText")) document.getElementById("profileResumeText").value = data.resume_text || "";
+    }
+  } catch (err) {
+    console.error("Profile load exception:", err);
+  }
+}
+
+document.getElementById("saveProfileBtn")?.addEventListener("click", async () => {
+  if (!window.supabaseClient) return;
+  const user = await window.auth.getUser();
+  if (!user) {
+    alert("You must be logged in to save your profile.");
+    return;
+  }
+
+  const btn = document.getElementById("saveProfileBtn");
+  const statusEl = document.getElementById("profileSaveStatus");
+  btn.disabled = true;
+  btn.textContent = "Saving...";
+  statusEl.style.display = "none";
+
+  const profileData = {
+    id: user.id,
+    email: user.email,
+    full_name: document.getElementById("profileFullName")?.value || "",
+    university: document.getElementById("profileUniversity")?.value || "",
+    experience_level: document.getElementById("profileExperience")?.value || "Student",
+    resume_text: document.getElementById("profileResumeText")?.value || "",
+    updated_at: new Date().toISOString()
+  };
+
+  try {
+    const { error } = await window.supabaseClient
+      .from('profiles')
+      .upsert(profileData);
+      
+    if (error) throw error;
+    
+    statusEl.style.display = "inline";
+    setTimeout(() => { statusEl.style.display = "none"; }, 3000);
+  } catch (err) {
+    console.error("Error saving profile:", err);
+    alert("Failed to save profile: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "💾 Save Profile";
+  }
+});
