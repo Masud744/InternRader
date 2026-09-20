@@ -97,10 +97,14 @@
         return;
       }
 
+      const meta = user.user_metadata || {};
       const payload = {
         id: user.id,
         email: user.email,
-        full_name: user.user_metadata?.full_name || "",
+        full_name: meta.full_name || "",
+        interest_area: meta.interest_area || "",
+        experience_level: meta.experience_level || "Student",
+        university: meta.university || "",
         updated_at: new Date().toISOString()
       };
 

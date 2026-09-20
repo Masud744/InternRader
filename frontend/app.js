@@ -28,6 +28,9 @@ let availableSources = [];
 let selectedSources = new Set();
 let clickStats = JSON.parse(localStorage.getItem("clickStats") || "{}");
 let currentUser = null;
+let currentProfile = null;
+
+// ── Authentication ───────────────────────────────────────────────
 
 async function checkAuth() {
   try {
@@ -43,7 +46,7 @@ async function checkAuth() {
       authOverlay.classList.remove("hidden");
       return false;
     }
-    
+
     const user = await auth.getUser();
     currentUser = user;
     console.log("[InternRadar] Authenticated as:", user?.email);
@@ -72,7 +75,6 @@ async function handleLogout() {
   } catch (error) {
     console.error("Logout error:", error);
   } finally {
-    // Force clear any supabase auth tokens locally just in case
     const keysToRemove = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -81,7 +83,6 @@ async function handleLogout() {
       }
     }
     keysToRemove.forEach(k => localStorage.removeItem(k));
-    
     window.location.href = "login.html";
   }
 }
@@ -101,11 +102,13 @@ if (logoutBtn) {
   logoutBtn.addEventListener("click", handleLogout);
 }
 
+// ── Bookmarks & Cloud Sync ───────────────────────────────────────
+
 function getBookmarks() {
   return JSON.parse(localStorage.getItem("bookmarks") || "[]");
 }
 
-function saveBookmarks(bookmarks) {
+function saveBookmarksLocal(bookmarks) {
   localStorage.setItem("bookmarks", JSON.stringify(bookmarks));
   updateBookmarkCount();
 }
@@ -113,24 +116,83 @@ function saveBookmarks(bookmarks) {
 function updateBookmarkCount() {
   const count = getBookmarks().length;
   if (bookmarkCountEl) bookmarkCountEl.textContent = String(count);
+  const savedCountEl = document.getElementById("savedCount");
+  if (savedCountEl) savedCountEl.textContent = String(count);
 }
 
 function isBookmarked(id) {
-  return getBookmarks().some(b => b.id === id);
+  return getBookmarks().some((b) => b.id === id);
 }
 
-function toggleBookmark(item) {
-  const bookmarks = getBookmarks();
-  const existingIndex = bookmarks.findIndex(b => b.id === item.id);
-  
-  if (existingIndex >= 0) {
-    bookmarks.splice(existingIndex, 1);
-  } else {
-    bookmarks.push(item);
+async function loadSavedJobsFromCloud() {
+  if (!currentUser) return;
+
+  try {
+    const resp = await fetch(`${DEFAULT_BASE}/saved-jobs?user_id=${currentUser.id}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const items = data.items || [];
+
+    // Map into bookmarks format
+    const cloudBookmarks = items.map((row) => {
+      const job = row.internships || {};
+      return {
+        id: job.id || row.internship_id,
+        saved_id: row.id,
+        title: job.title || "Untitled",
+        company: job.company || "Unknown",
+        location: job.location || "Remote",
+        link: job.link || "",
+        source: job.source || "Database",
+        keyword: job.keyword || "",
+        posted_date: job.posted_date || "",
+        status: row.status || "Saved",
+      };
+    });
+
+    if (cloudBookmarks.length > 0) {
+      saveBookmarksLocal(cloudBookmarks);
+      renderRows(currentItems);
+    }
+  } catch (err) {
+    console.warn("Could not sync saved jobs from cloud:", err);
   }
-  
-  saveBookmarks(bookmarks);
-  renderRows(currentItems);
+}
+
+async function toggleBookmark(item) {
+  const bookmarks = getBookmarks();
+  const existingIndex = bookmarks.findIndex((b) => b.id === item.id);
+
+  if (existingIndex >= 0) {
+    const removed = bookmarks.splice(existingIndex, 1)[0];
+    saveBookmarksLocal(bookmarks);
+    renderRows(currentItems);
+
+    // Sync deletion to cloud
+    if (currentUser && item.id) {
+      fetch(`${DEFAULT_BASE}/saved-jobs?user_id=${currentUser.id}&internship_id=${item.id}`, {
+        method: "DELETE",
+      }).catch((e) => console.warn("Cloud unsave failed:", e));
+    }
+  } else {
+    const newBookmark = { ...item, status: "Saved" };
+    bookmarks.push(newBookmark);
+    saveBookmarksLocal(bookmarks);
+    renderRows(currentItems);
+
+    // Sync insert to cloud
+    if (currentUser && item.id) {
+      fetch(`${DEFAULT_BASE}/saved-jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: currentUser.id,
+          internship_id: item.id,
+          status: "Saved",
+        }),
+      }).catch((e) => console.warn("Cloud save failed:", e));
+    }
+  }
 }
 
 function trackClick(id) {
@@ -164,7 +226,7 @@ function buildQuery() {
   const keyword = keywordInput.value.trim();
   const location = locationInput.value.trim();
   const dateFrom = dateFromInput.value;
-  
+
   if (keyword) params.set("keyword", keyword);
   if (location) params.set("location", location);
   if (dateFrom) params.set("date_from", dateFrom);
@@ -178,13 +240,17 @@ function buildQuery() {
 function renderSourceFilters(sources) {
   if (!sources.length) return;
   availableSources = sources;
-  sourceFiltersEl.innerHTML = sources.map(source => `
-    <button class="source-toggle ${selectedSources.has(source) ? 'active' : ''}" data-source="${escapeHtml(source)}">
+  sourceFiltersEl.innerHTML = sources
+    .map(
+      (source) => `
+    <button class="source-toggle ${selectedSources.has(source) ? "active" : ""}" data-source="${escapeHtml(source)}">
       ${escapeHtml(source)}
     </button>
-  `).join("");
-  
-  sourceFiltersEl.querySelectorAll(".source-toggle").forEach(btn => {
+  `
+    )
+    .join("");
+
+  sourceFiltersEl.querySelectorAll(".source-toggle").forEach((btn) => {
     btn.addEventListener("click", () => {
       const source = btn.dataset.source;
       if (selectedSources.has(source)) {
@@ -202,34 +268,42 @@ function renderSourceFilters(sources) {
 
 function renderRows(items) {
   if (!items.length) {
-    resultsBody.innerHTML = '<tr><td colspan="8" class="empty">No internships found. Try adjusting your filters.</td></tr>';
+    resultsBody.innerHTML =
+      '<tr><td colspan="8" class="empty">No internships found. Try adjusting your filters.</td></tr>';
     return;
   }
 
   const bookmarks = getBookmarks();
-  
+
   const rows = items
-    .map((item) => {
-      const link = item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" class="btn-ghost" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" onclick="trackClick('${item.id}')">Open</a>` : "—";
-      const aiBtn = `<button class="btn-primary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-left: 0.25rem;" onclick='openCoverLetterModal(${JSON.stringify(item).replace(/'/g, "&#39;")})'>✨ AI</button>`;
+    .map((item, index) => {
+      const link = item.link
+        ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" class="btn-ghost" style="padding: 0.25rem 0.45rem; font-size: 0.7rem;" onclick="trackClick('${item.id}')">Open ↗</a>`
+        : "—";
+
+      const itemJson = JSON.stringify(item).replace(/'/g, "&#39;");
+      const matchBtn = `<button class="btn-ghost" style="padding: 0.25rem 0.45rem; font-size: 0.7rem; border-color: #34d399; color: #34d399; margin-left: 0.2rem;" onclick='openMatchScoreModal(${itemJson})'>🎯 Match</button>`;
+      const dmBtn = `<button class="btn-ghost" style="padding: 0.25rem 0.45rem; font-size: 0.7rem; border-color: #8b5cf6; color: #a78bfa; margin-left: 0.2rem;" onclick='openOutreachModal(${itemJson})'>✉️ DM</button>`;
+      const aiBtn = `<button class="btn-primary" style="padding: 0.25rem 0.45rem; font-size: 0.7rem; margin-left: 0.2rem;" onclick='openCoverLetterModal(${itemJson})'>✨ Letter</button>`;
+
       const title = item.title || "—";
       const company = item.company || "—";
       const location = item.location || "—";
       const source = item.source || "—";
       const keyword = item.keyword || "—";
       const postedDate = item.posted_date || "—";
-      const bookmarked = bookmarks.some(b => b.id === item.id);
-      
+      const bookmarked = bookmarks.some((b) => b.id === item.id);
+
       return `
         <tr>
-          <td><button class="bookmark-btn ${bookmarked ? 'active' : ''}" onclick='toggleBookmark(${JSON.stringify(item).replace(/'/g, "&#39;")})'>★</button></td>
-          <td>${escapeHtml(title)}</td>
+          <td><button class="bookmark-btn ${bookmarked ? "active" : ""}" onclick='toggleBookmark(${itemJson})' title="Save to profile">★</button></td>
+          <td><strong style="color: var(--text);">${escapeHtml(title)}</strong></td>
           <td>${escapeHtml(company)}</td>
           <td>${escapeHtml(location)}</td>
           <td><span class="source-tag">${escapeHtml(source)}</span></td>
           <td>${escapeHtml(keyword)}</td>
           <td>${escapeHtml(postedDate)}</td>
-          <td style="white-space: nowrap;">${link}${aiBtn}</td>
+          <td style="white-space: nowrap;">${link}${matchBtn}${dmBtn}${aiBtn}</td>
         </tr>
       `;
     })
@@ -241,19 +315,18 @@ function renderRows(items) {
 function renderPagination(total, limit, offset) {
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const currentPage = Math.floor(offset / limit) + 1;
-  
+
   let html = "";
-  
   html += `<button ${currentPage <= 1 ? "disabled" : ""} onclick="goToPage(1)">First</button>`;
   html += `<button ${currentPage <= 1 ? "disabled" : ""} onclick="goToPage(${currentPage - 1})">Prev</button>`;
   html += `<span>Page ${currentPage} of ${totalPages}</span>`;
   html += `<button ${currentPage >= totalPages ? "disabled" : ""} onclick="goToPage(${currentPage + 1})">Next</button>`;
   html += `<button ${currentPage >= totalPages ? "disabled" : ""} onclick="goToPage(${totalPages})">Last</button>`;
-  
+
   paginationEl.innerHTML = html;
 }
 
-window.goToPage = function(page) {
+window.goToPage = function (page) {
   const limit = parseInt(perPageSelect.value, 10) || 20;
   currentOffset = (page - 1) * limit;
   loadInternships();
@@ -264,23 +337,37 @@ function updateStats(items, total) {
   const showing = items.length;
   const start = total > 0 ? currentOffset + 1 : 0;
   const end = currentOffset + showing;
-  
+
   showingCountEl.textContent = total > 0 ? `${start}-${end}` : "0-0";
   totalCountEl.textContent = String(total);
-  
+
   const sources = new Set(items.map((item) => item.source).filter(Boolean));
   sourceCountEl.textContent = String(sources.size);
 }
 
-// Chart.js instances
+// ── Chart.js Analytics ───────────────────────────────────────────
+
 let chartInstances = {};
 
 function destroyCharts() {
-  Object.values(chartInstances).forEach(c => { if (c) c.destroy(); });
+  Object.values(chartInstances).forEach((c) => {
+    if (c) c.destroy();
+  });
   chartInstances = {};
 }
 
-const CHART_COLORS = ['#3b82f6','#8b5cf6','#f59e0b','#10b981','#ef4444','#ec4899','#06b6d4','#84cc16','#f97316','#6366f1'];
+const CHART_COLORS = [
+  "#3b82f6",
+  "#8b5cf6",
+  "#f59e0b",
+  "#10b981",
+  "#ef4444",
+  "#ec4899",
+  "#06b6d4",
+  "#84cc16",
+  "#f97316",
+  "#6366f1",
+];
 
 function renderAnalytics(stats) {
   destroyCharts();
@@ -289,6 +376,10 @@ function renderAnalytics(stats) {
   const byKeyword = stats.by_keyword || {};
   const byDate = stats.by_date || {};
 
+  const mutedColor =
+    getComputedStyle(document.body).getPropertyValue("--text-muted").trim() ||
+    "#94a3b8";
+
   // 1. Doughnut – Jobs by Source
   const srcCtx = document.getElementById("sourceChartCanvas");
   if (srcCtx) {
@@ -296,9 +387,24 @@ function renderAnalytics(stats) {
       type: "doughnut",
       data: {
         labels: Object.keys(bySource),
-        datasets: [{ data: Object.values(bySource), backgroundColor: CHART_COLORS, borderWidth: 0 }]
+        datasets: [
+          {
+            data: Object.values(bySource),
+            backgroundColor: CHART_COLORS,
+            borderWidth: 0,
+          },
+        ],
       },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim(), font: { size: 11 } } } } }
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: { color: mutedColor, font: { size: 11 } },
+          },
+        },
+      },
     });
   }
 
@@ -309,9 +415,31 @@ function renderAnalytics(stats) {
       type: "bar",
       data: {
         labels: Object.keys(byLocation),
-        datasets: [{ label: "Jobs", data: Object.values(byLocation), backgroundColor: "#3b82f6", borderRadius: 4 }]
+        datasets: [
+          {
+            label: "Jobs",
+            data: Object.values(byLocation),
+            backgroundColor: "#3b82f6",
+            borderRadius: 4,
+          },
+        ],
       },
-      options: { responsive: true, maintainAspectRatio: false, indexAxis: "y", plugins: { legend: { display: false } }, scales: { x: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim() }, grid: { color: "rgba(255,255,255,0.05)" } }, y: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim(), font: { size: 10 } }, grid: { display: false } } } }
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        indexAxis: "y",
+        plugins: { legend: { display: false } },
+        scales: {
+          x: {
+            ticks: { color: mutedColor },
+            grid: { color: "rgba(255,255,255,0.05)" },
+          },
+          y: {
+            ticks: { color: mutedColor, font: { size: 10 } },
+            grid: { display: false },
+          },
+        },
+      },
     });
   }
 
@@ -322,9 +450,30 @@ function renderAnalytics(stats) {
       type: "bar",
       data: {
         labels: Object.keys(byKeyword),
-        datasets: [{ label: "Jobs", data: Object.values(byKeyword), backgroundColor: CHART_COLORS, borderRadius: 4 }]
+        datasets: [
+          {
+            label: "Jobs",
+            data: Object.values(byKeyword),
+            backgroundColor: CHART_COLORS,
+            borderRadius: 4,
+          },
+        ],
       },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim(), font: { size: 9 }, maxRotation: 45 }, grid: { display: false } }, y: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim() }, grid: { color: "rgba(255,255,255,0.05)" } } } }
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: {
+            ticks: { color: mutedColor, font: { size: 9 }, maxRotation: 45 },
+            grid: { display: false },
+          },
+          y: {
+            ticks: { color: mutedColor },
+            grid: { color: "rgba(255,255,255,0.05)" },
+          },
+        },
+      },
     });
   }
 
@@ -335,12 +484,38 @@ function renderAnalytics(stats) {
       type: "line",
       data: {
         labels: Object.keys(byDate),
-        datasets: [{ label: "New Jobs", data: Object.values(byDate), borderColor: "#8b5cf6", backgroundColor: "rgba(139,92,246,0.1)", fill: true, tension: 0.4, pointRadius: 2 }]
+        datasets: [
+          {
+            label: "New Jobs",
+            data: Object.values(byDate),
+            borderColor: "#8b5cf6",
+            backgroundColor: "rgba(139,92,246,0.1)",
+            fill: true,
+            tension: 0.4,
+            pointRadius: 2,
+          },
+        ],
       },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim(), font: { size: 9 }, maxRotation: 45 }, grid: { display: false } }, y: { ticks: { color: getComputedStyle(document.body).getPropertyValue('--text-muted').trim() }, grid: { color: "rgba(255,255,255,0.05)" } } } }
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: {
+            ticks: { color: mutedColor, font: { size: 9 }, maxRotation: 45 },
+            grid: { display: false },
+          },
+          y: {
+            ticks: { color: mutedColor },
+            grid: { color: "rgba(255,255,255,0.05)" },
+          },
+        },
+      },
     });
   }
 }
+
+// ── Load Internships ─────────────────────────────────────────────
 
 async function loadInternships() {
   const url = buildQuery();
@@ -354,8 +529,7 @@ async function loadInternships() {
   try {
     const response = await fetch(url);
     const responseText = await response.text();
-    console.log("[InternRadar] Response status:", response.status, "length:", responseText.length);
-    
+
     if (!response.ok) {
       throw new Error(`Error ${response.status}: ${responseText}`);
     }
@@ -366,17 +540,24 @@ async function loadInternships() {
     } catch {
       throw new Error(`Invalid JSON: ${responseText.slice(0, 100)}`);
     }
-    
-    const items = Array.isArray(payload.items) ? payload.items : (Array.isArray(payload) ? payload : []);
+
+    const items = Array.isArray(payload.items)
+      ? payload.items
+      : Array.isArray(payload)
+      ? payload
+      : [];
     const total = payload.total || items.length;
     currentItems = items;
-    console.log("[InternRadar] Loaded", items.length, "items, total:", total);
-    
+
     renderRows(items);
     updateStats(items, total);
-    renderPagination(total, parseInt(perPageSelect.value, 10) || 20, currentOffset);
+    renderPagination(
+      total,
+      parseInt(perPageSelect.value, 10) || 20,
+      currentOffset
+    );
     setStatus(`Showing ${items.length} of ${total} internships`);
-    
+
     if (items.length > 0 && availableSources.length === 0) {
       loadSources();
     }
@@ -390,7 +571,8 @@ async function loadInternships() {
   } finally {
     if (loadBtn) {
       loadBtn.disabled = false;
-      loadBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> LOAD INTERNSHIPS';
+      loadBtn.innerHTML =
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> LOAD INTERNSHIPS';
     }
   }
 }
@@ -422,18 +604,30 @@ function exportToCSV(items, filename = "internships.csv") {
     setStatus("No data to export", true);
     return;
   }
-  
-  const headers = ["Title", "Company", "Location", "Source", "Keyword", "Posted Date", "Link"];
-  const rows = items.map(item => [
-    item.title || "",
-    item.company || "",
-    item.location || "",
-    item.source || "",
-    item.keyword || "",
-    item.posted_date || "",
-    item.link || ""
-  ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(","));
-  
+
+  const headers = [
+    "Title",
+    "Company",
+    "Location",
+    "Source",
+    "Keyword",
+    "Posted Date",
+    "Link",
+  ];
+  const rows = items.map((item) =>
+    [
+      item.title || "",
+      item.company || "",
+      item.location || "",
+      item.source || "",
+      item.keyword || "",
+      item.posted_date || "",
+      item.link || "",
+    ]
+      .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+      .join(",")
+  );
+
   const csv = [headers.join(","), ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -442,16 +636,20 @@ function exportToCSV(items, filename = "internships.csv") {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
-  
+
   setStatus(`Exported ${items.length} internships to CSV`);
 }
 
+// ── Tab Switching ────────────────────────────────────────────────
+
 function showTab(tabName) {
-  document.querySelectorAll(".nav-btn").forEach(t => t.classList.remove("active"));
+  document
+    .querySelectorAll(".nav-btn")
+    .forEach((t) => t.classList.remove("active"));
   const activeBtn = document.querySelector(`.nav-btn[data-tab="${tabName}"]`);
   if (activeBtn) activeBtn.classList.add("active");
-  
-  document.querySelectorAll(".tab-content").forEach(c => {
+
+  document.querySelectorAll(".tab-content").forEach((c) => {
     c.classList.remove("active");
     c.classList.add("hidden");
   });
@@ -462,19 +660,22 @@ function showTab(tabName) {
   }
 
   const pageTitle = document.getElementById("pageTitle");
-  if(pageTitle) {
+  if (pageTitle) {
     if (tabName === "internships") pageTitle.textContent = "DASHBOARD OVERVIEW";
     else if (tabName === "bookmarks") pageTitle.textContent = "SAVED INTERNSHIPS";
     else if (tabName === "analytics") pageTitle.textContent = "ANALYTICS OVERVIEW";
     else if (tabName === "tracker") pageTitle.textContent = "APPLICATION TRACKER";
+    else if (tabName === "profile") pageTitle.textContent = "YOUR PROFILE & CV";
   }
-  
+
   if (tabName === "bookmarks") {
-    renderBookmarksTab();
+    loadSavedJobsFromCloud().finally(renderBookmarksTab);
   } else if (tabName === "analytics") {
     loadAnalytics();
   } else if (tabName === "tracker") {
-    loadTrackerBoard();
+    loadSavedJobsFromCloud().finally(loadTrackerBoard);
+  } else if (tabName === "profile") {
+    loadProfile();
   }
 }
 
@@ -484,26 +685,35 @@ function renderBookmarksTab() {
   if (!bookmarksBody) return;
 
   if (!bookmarks.length) {
-    bookmarksBody.innerHTML = '<tr><td colspan="8" class="empty-state">No bookmarks saved yet. Use the ★ button to save listings.</td></tr>';
+    bookmarksBody.innerHTML =
+      '<tr><td colspan="8" class="empty-state">No bookmarks saved yet. Use the ★ button to save listings.</td></tr>';
     return;
   }
 
-  const rows = bookmarks.map((item) => {
-    const link = item.link ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" class="btn-ghost" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" onclick="trackClick('${item.id}')">Open</a>` : "—";
-    const aiBtn = `<button class="btn-primary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; margin-left: 0.25rem;" onclick='openCoverLetterModal(${JSON.stringify(item).replace(/'/g, "&#39;")})'>✨ AI</button>`;
-    return `
+  const rows = bookmarks
+    .map((item) => {
+      const link = item.link
+        ? `<a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" class="btn-ghost" style="padding: 0.25rem 0.45rem; font-size: 0.7rem;" onclick="trackClick('${item.id}')">Open ↗</a>`
+        : "—";
+      const itemJson = JSON.stringify(item).replace(/'/g, "&#39;");
+      const matchBtn = `<button class="btn-ghost" style="padding: 0.25rem 0.45rem; font-size: 0.7rem; border-color: #34d399; color: #34d399; margin-left: 0.2rem;" onclick='openMatchScoreModal(${itemJson})'>🎯 Match</button>`;
+      const dmBtn = `<button class="btn-ghost" style="padding: 0.25rem 0.45rem; font-size: 0.7rem; border-color: #8b5cf6; color: #a78bfa; margin-left: 0.2rem;" onclick='openOutreachModal(${itemJson})'>✉️ DM</button>`;
+      const aiBtn = `<button class="btn-primary" style="padding: 0.25rem 0.45rem; font-size: 0.7rem; margin-left: 0.2rem;" onclick='openCoverLetterModal(${itemJson})'>✨ Letter</button>`;
+
+      return `
       <tr>
-        <td><button class="bookmark-btn active" onclick='toggleBookmark(${JSON.stringify(item).replace(/'/g, "&#39;")})'>★</button></td>
-        <td>${escapeHtml(item.title || "—")}</td>
+        <td><button class="bookmark-btn active" onclick='toggleBookmark(${itemJson})'>★</button></td>
+        <td><strong style="color: var(--text);">${escapeHtml(item.title || "—")}</strong></td>
         <td>${escapeHtml(item.company || "—")}</td>
         <td>${escapeHtml(item.location || "—")}</td>
         <td><span class="source-tag">${escapeHtml(item.source || "—")}</span></td>
         <td>${escapeHtml(item.keyword || "—")}</td>
         <td>${escapeHtml(item.posted_date || "—")}</td>
-        <td style="white-space: nowrap;">${link}${aiBtn}</td>
+        <td style="white-space: nowrap;">${link}${matchBtn}${dmBtn}${aiBtn}</td>
       </tr>
     `;
-  }).join("");
+    })
+    .join("");
 
   bookmarksBody.innerHTML = rows;
 }
@@ -515,13 +725,43 @@ function resetFilters() {
   sortBySelect.value = "latest";
   perPageSelect.value = "20";
   selectedSources.clear();
-  document.querySelectorAll(".source-toggle").forEach(btn => btn.classList.remove("active"));
+  document
+    .querySelectorAll(".source-toggle")
+    .forEach((btn) => btn.classList.remove("active"));
   currentOffset = 0;
   setStatus("Filters reset");
   loadInternships();
 }
 
-document.querySelectorAll(".nav-btn").forEach(btn => {
+// ── Quick Filter Chips ───────────────────────────────────────────
+
+document.querySelectorAll(".chip-btn").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    const type = chip.dataset.chip;
+    currentOffset = 0;
+
+    if (type === "remote") {
+      locationInput.value = "Remote";
+      keywordInput.value = "";
+    } else if (type === "bd") {
+      locationInput.value = "Bangladesh";
+      keywordInput.value = "";
+    } else if (type === "ai") {
+      keywordInput.value = "ai";
+      locationInput.value = "";
+    } else if (type === "python") {
+      keywordInput.value = "python";
+      locationInput.value = "";
+    } else if (type === "web") {
+      keywordInput.value = "web";
+      locationInput.value = "";
+    }
+
+    loadInternships();
+  });
+});
+
+document.querySelectorAll(".nav-btn").forEach((btn) => {
   if (btn.dataset.tab) {
     btn.addEventListener("click", () => showTab(btn.dataset.tab));
   }
@@ -536,37 +776,34 @@ refreshBtn.addEventListener("click", () => {
 exportBtn.addEventListener("click", () => exportToCSV(currentItems));
 resetBtn.addEventListener("click", resetFilters);
 
-document.getElementById("exportBookmarksBtn")?.addEventListener("click", () => {
-  exportToCSV(getBookmarks(), "bookmarks.csv");
-});
+document
+  .getElementById("exportBookmarksBtn")
+  ?.addEventListener("click", () => {
+    exportToCSV(getBookmarks(), "bookmarks.csv");
+  });
 
-document.getElementById("clearBookmarksBtn")?.addEventListener("click", () => {
-  if (confirm("Clear all bookmarks?")) {
-    saveBookmarks([]);
-    renderBookmarksTab();
-    setStatus("Bookmarks cleared");
-  }
-});
+document
+  .getElementById("clearBookmarksBtn")
+  ?.addEventListener("click", () => {
+    if (confirm("Clear all bookmarks?")) {
+      saveBookmarksLocal([]);
+      renderBookmarksTab();
+      setStatus("Bookmarks cleared");
+    }
+  });
 
-// State
-let allInternships = [];
-let currentPage = 1;
-const itemsPerPage = 20;
-
-// ══════════════════════════════════════════
-// KANBAN BOARD (Application Tracker)
-// ══════════════════════════════════════════
+// ── Kanban Board (Application Tracker) ───────────────────────────
 
 function loadTrackerBoard() {
   const bookmarks = getBookmarks();
   const statuses = ["Saved", "Applied", "Interviewing", "Accepted", "Rejected"];
 
-  statuses.forEach(status => {
+  statuses.forEach((status) => {
     const container = document.getElementById(`items${status}`);
     const countEl = document.getElementById(`count${status}`);
     if (!container) return;
 
-    const items = bookmarks.filter(b => (b.status || "Saved") === status);
+    const items = bookmarks.filter((b) => (b.status || "Saved") === status);
     if (countEl) countEl.textContent = items.length;
 
     if (!items.length) {
@@ -574,37 +811,264 @@ function loadTrackerBoard() {
       return;
     }
 
-    container.innerHTML = items.map(item => `
-      <div class="kanban-card" style="background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem; margin-bottom: 0.5rem; cursor: default;">
-        <p style="color: var(--text); font-size: 0.75rem; font-weight: 500; margin-bottom: 0.25rem; line-height: 1.3;">${escapeHtml(item.title || "Untitled")}</p>
-        <p style="color: var(--text-muted); font-size: 0.65rem; margin-bottom: 0.5rem;">${escapeHtml(item.company || "—")}</p>
-        <select class="kanban-status-select" data-id="${escapeHtml(item.id || item.link)}" style="width: 100%; padding: 0.25rem; font-size: 0.65rem; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer;">
-          ${statuses.map(s => `<option value="${s}" ${s === status ? "selected" : ""}>${s}</option>`).join("")}
-        </select>
+    container.innerHTML = items
+      .map(
+        (item) => `
+      <div class="kanban-card" style="background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem; margin-bottom: 0.5rem;">
+        <p style="color: var(--text); font-size: 0.75rem; font-weight: 500; margin-bottom: 0.25rem; line-height: 1.3;">${escapeHtml(
+          item.title || "Untitled"
+        )}</p>
+        <p style="color: var(--text-muted); font-size: 0.65rem; margin-bottom: 0.5rem;">${escapeHtml(
+          item.company || "—"
+        )} &bull; ${escapeHtml(item.location || "")}</p>
+        <div style="display: flex; gap: 0.4rem; align-items: center;">
+          <select class="kanban-status-select" data-id="${escapeHtml(
+            item.id || item.link
+          )}" data-saved-id="${escapeHtml(
+          item.saved_id || ""
+        )}" style="flex: 1; padding: 0.25rem; font-size: 0.65rem; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer;">
+            ${statuses
+              .map(
+                (s) =>
+                  `<option value="${s}" ${s === status ? "selected" : ""}>${s}</option>`
+              )
+              .join("")}
+          </select>
+          ${
+            item.link
+              ? `<a href="${escapeHtml(
+                  item.link
+                )}" target="_blank" class="btn-ghost" style="padding: 0.2rem 0.4rem; font-size: 0.65rem;">↗</a>`
+              : ""
+          }
+        </div>
       </div>
-    `).join("");
+    `
+      )
+      .join("");
   });
 
   // Bind status change events
-  document.querySelectorAll(".kanban-status-select").forEach(sel => {
+  document.querySelectorAll(".kanban-status-select").forEach((sel) => {
     sel.addEventListener("change", (e) => {
       const itemId = e.target.dataset.id;
+      const savedId = e.target.dataset.savedId;
       const newStatus = e.target.value;
       const bookmarks = getBookmarks();
-      const idx = bookmarks.findIndex(b => (b.id || b.link) === itemId);
+      const idx = bookmarks.findIndex(
+        (b) => (b.id || b.link) === itemId
+      );
       if (idx !== -1) {
         bookmarks[idx].status = newStatus;
-        saveBookmarks(bookmarks);
+        saveBookmarksLocal(bookmarks);
         loadTrackerBoard();
+
+        // Cloud sync status update
+        const recordIdToUpdate = savedId || bookmarks[idx].saved_id;
+        if (recordIdToUpdate) {
+          fetch(`${DEFAULT_BASE}/saved-jobs/${recordIdToUpdate}/status?status=${newStatus}`, {
+            method: "PATCH",
+          }).catch((err) => console.warn("Status patch failed:", err));
+        }
       }
     });
   });
 }
 
+// ── Groq AI: Resume Match Score ──────────────────────────────────
 
-// ══════════════════════════════════════════
-// AI COVER LETTER GENERATOR
-// ══════════════════════════════════════════
+let currentMatchJob = null;
+
+async function openMatchScoreModal(job) {
+  currentMatchJob = job;
+  const modal = document.getElementById("matchModal");
+  const titleEl = document.getElementById("matchJobTitle");
+  const loadingEl = document.getElementById("matchLoading");
+  const contentEl = document.getElementById("matchContent");
+
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  titleEl.textContent = `Analyzing: ${job.title} at ${job.company}`;
+  loadingEl.classList.remove("hidden");
+  contentEl.classList.add("hidden");
+
+  try {
+    const resumeText =
+      document.getElementById("profileResumeText")?.value ||
+      currentProfile?.resume_text ||
+      localStorage.getItem("userResumeText") ||
+      "";
+
+    const resp = await fetch(`${DEFAULT_BASE}/analyze-resume-match`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: job.title || "",
+        company: job.company || "",
+        description: job.description || job.keyword || "",
+        resume_text: resumeText,
+      }),
+    });
+
+    if (!resp.ok) throw new Error(`API error ${resp.status}`);
+    const data = await resp.json();
+
+    const score = data.match_score || 70;
+    const scoreDisplay = document.getElementById("matchScoreDisplay");
+    const verdictBadge = document.getElementById("matchVerdictBadge");
+
+    scoreDisplay.textContent = `${score}%`;
+    if (score >= 80) {
+      scoreDisplay.style.color = "#34d399";
+      verdictBadge.style.background = "#10b981";
+      verdictBadge.textContent = "Strong Match";
+    } else if (score >= 60) {
+      scoreDisplay.style.color = "#60a5fa";
+      verdictBadge.style.background = "#3b82f6";
+      verdictBadge.textContent = "Good Potential";
+    } else {
+      scoreDisplay.style.color = "#fbbf24";
+      verdictBadge.style.background = "#f59e0b";
+      verdictBadge.textContent = "Skill Gap";
+    }
+
+    const matchingPills = document.getElementById("matchingSkillsPills");
+    const missingPills = document.getElementById("missingSkillsPills");
+
+    const matchSkills = data.matching_skills || [];
+    matchingPills.innerHTML = matchSkills.length
+      ? matchSkills
+          .map(
+            (s) =>
+              `<span style="background: rgba(52, 211, 153, 0.15); border: 1px solid rgba(52, 211, 153, 0.3); color: #34d399; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem;">${escapeHtml(
+                s
+              )}</span>`
+          )
+          .join("")
+      : '<span style="color: var(--text-dim); font-size: 0.75rem;">No exact matching skills found.</span>';
+
+    const missingSkills = data.missing_skills || [];
+    missingPills.innerHTML = missingSkills.length
+      ? missingSkills
+          .map(
+            (s) =>
+              `<span style="background: rgba(251, 191, 36, 0.15); border: 1px solid rgba(251, 191, 36, 0.3); color: #fbbf24; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem;">${escapeHtml(
+                s
+              )}</span>`
+          )
+          .join("")
+      : '<span style="color: var(--text-dim); font-size: 0.75rem;">None! You meet all core requirements.</span>';
+
+    document.getElementById("matchRecommendation").textContent =
+      data.recommendation || "Highlight your relevant projects when applying!";
+
+    loadingEl.classList.add("hidden");
+    contentEl.classList.remove("hidden");
+  } catch (err) {
+    loadingEl.innerHTML = `<div style="color: #ef4444;">❌ Failed to analyze match: ${err.message}</div>`;
+  }
+}
+
+document.getElementById("closeMatchModal")?.addEventListener("click", () => {
+  document.getElementById("matchModal")?.classList.add("hidden");
+});
+
+document
+  .getElementById("matchGenerateCoverLetterBtn")
+  ?.addEventListener("click", () => {
+    document.getElementById("matchModal")?.classList.add("hidden");
+    if (currentMatchJob) {
+      openCoverLetterModal(currentMatchJob);
+    }
+  });
+
+window.openMatchScoreModal = openMatchScoreModal;
+
+// ── Groq AI: LinkedIn Outreach DM ────────────────────────────────
+
+let currentOutreachJob = null;
+
+async function openOutreachModal(job) {
+  currentOutreachJob = job;
+  const modal = document.getElementById("outreachModal");
+  const titleEl = document.getElementById("outreachJobTitle");
+  const loadingEl = document.getElementById("outreachLoading");
+  const contentEl = document.getElementById("outreachContent");
+
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  titleEl.textContent = `For: ${job.title} at ${job.company}`;
+  loadingEl.classList.remove("hidden");
+  contentEl.classList.add("hidden");
+
+  generateOutreachMessage(job);
+}
+
+async function generateOutreachMessage(job) {
+  const loadingEl = document.getElementById("outreachLoading");
+  const contentEl = document.getElementById("outreachContent");
+  const textEl = document.getElementById("outreachMessageText");
+
+  try {
+    const resumeText =
+      document.getElementById("profileResumeText")?.value ||
+      currentProfile?.resume_text ||
+      "";
+    const userName =
+      document.getElementById("profileFullName")?.value ||
+      currentProfile?.full_name ||
+      "Applicant";
+
+    const resp = await fetch(`${DEFAULT_BASE}/generate-outreach-message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: job.title || "",
+        company: job.company || "",
+        user_name: userName,
+        resume_text: resumeText,
+      }),
+    });
+
+    if (!resp.ok) throw new Error(`API error ${resp.status}`);
+    const data = await resp.json();
+
+    textEl.textContent =
+      data.outreach_message || "Could not generate message.";
+    loadingEl.classList.add("hidden");
+    contentEl.classList.remove("hidden");
+  } catch (err) {
+    loadingEl.innerHTML = `<div style="color: #ef4444;">❌ Generation failed: ${err.message}</div>`;
+  }
+}
+
+document.getElementById("closeOutreachModal")?.addEventListener("click", () => {
+  document.getElementById("outreachModal")?.classList.add("hidden");
+});
+
+document.getElementById("copyOutreachBtn")?.addEventListener("click", () => {
+  const text =
+    document.getElementById("outreachMessageText")?.textContent || "";
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById("copyOutreachBtn");
+    btn.textContent = "✅ Copied!";
+    setTimeout(() => (btn.textContent = "📋 Copy DM"), 2000);
+  });
+});
+
+document
+  .getElementById("regenerateOutreachBtn")
+  ?.addEventListener("click", () => {
+    if (currentOutreachJob) {
+      document.getElementById("outreachLoading").classList.remove("hidden");
+      document.getElementById("outreachContent").classList.add("hidden");
+      generateOutreachMessage(currentOutreachJob);
+    }
+  });
+
+window.openOutreachModal = openOutreachModal;
+
+// ── AI Cover Letter Generator ────────────────────────────────────
 
 let currentCoverLetterJob = null;
 
@@ -617,7 +1081,6 @@ function openCoverLetterModal(job) {
   const actionsEl = document.getElementById("coverLetterActions");
 
   if (!modal) return;
-
   titleEl.textContent = `For: ${job.title} at ${job.company}`;
   loadingEl.classList.remove("hidden");
   contentEl.classList.add("hidden");
@@ -633,9 +1096,15 @@ async function generateCoverLetter(job) {
   const actionsEl = document.getElementById("coverLetterActions");
 
   try {
-    const profileName = document.getElementById("profileFullName")?.value || "";
-    const profileResume = document.getElementById("profileResumeText")?.value || "";
-    
+    const profileName =
+      document.getElementById("profileFullName")?.value ||
+      currentProfile?.full_name ||
+      "Applicant";
+    const profileResume =
+      document.getElementById("profileResumeText")?.value ||
+      currentProfile?.resume_text ||
+      "";
+
     const resp = await fetch(`${DEFAULT_BASE}/generate-cover-letter`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -643,8 +1112,8 @@ async function generateCoverLetter(job) {
         title: job.title || "",
         company: job.company || "",
         location: job.location || "",
-        user_name: profileName || localStorage.getItem("userName") || "Applicant",
-        user_skills: profileResume || localStorage.getItem("userSkills") || "",
+        user_name: profileName,
+        user_skills: profileResume,
       }),
     });
     if (!resp.ok) throw new Error(`API error: ${resp.status}`);
@@ -659,63 +1128,164 @@ async function generateCoverLetter(job) {
   }
 }
 
-// Cover Letter modal event listeners
-document.getElementById("closeCoverLetterModal")?.addEventListener("click", () => {
-  document.getElementById("coverLetterModal")?.classList.add("hidden");
-});
+document
+  .getElementById("closeCoverLetterModal")
+  ?.addEventListener("click", () => {
+    document.getElementById("coverLetterModal")?.classList.add("hidden");
+  });
 
 document.getElementById("copyCoverLetter")?.addEventListener("click", () => {
-  const text = document.getElementById("coverLetterContent")?.textContent || "";
+  const text =
+    document.getElementById("coverLetterContent")?.textContent || "";
   navigator.clipboard.writeText(text).then(() => {
     const btn = document.getElementById("copyCoverLetter");
     btn.textContent = "✅ Copied!";
-    setTimeout(() => btn.textContent = "📋 Copy to Clipboard", 2000);
+    setTimeout(() => (btn.textContent = "📋 Copy to Clipboard"), 2000);
   });
 });
 
-document.getElementById("regenerateCoverLetter")?.addEventListener("click", () => {
-  if (currentCoverLetterJob) {
-    document.getElementById("coverLetterLoading").classList.remove("hidden");
-    document.getElementById("coverLetterContent").classList.add("hidden");
-    document.getElementById("coverLetterActions").classList.add("hidden");
-    generateCoverLetter(currentCoverLetterJob);
-  }
-});
+document
+  .getElementById("regenerateCoverLetter")
+  ?.addEventListener("click", () => {
+    if (currentCoverLetterJob) {
+      document.getElementById("coverLetterLoading").classList.remove("hidden");
+      document.getElementById("coverLetterContent").classList.add("hidden");
+      document.getElementById("coverLetterActions").classList.add("hidden");
+      generateCoverLetter(currentCoverLetterJob);
+    }
+  });
 
-// Make openCoverLetterModal globally accessible
 window.openCoverLetterModal = openCoverLetterModal;
 
+// ── Theme Toggle (Single Registration) ───────────────────────────
 
-// ══════════════════════════════════════════
-// THEME TOGGLE
-// ══════════════════════════════════════════
+let themeInitialized = false;
 
 function initThemeToggle() {
-  const toggleBtn = document.getElementById('themeToggleBtn');
-  const themeIcon = document.getElementById('themeIcon');
+  if (themeInitialized) return;
+  const toggleBtn = document.getElementById("themeToggleBtn");
+  const themeIcon = document.getElementById("themeIcon");
   if (!toggleBtn || !themeIcon) return;
 
-  const currentTheme = localStorage.getItem('theme') || 'light';
-  if (currentTheme === 'dark') {
-    document.body.classList.add('dark-theme');
-    themeIcon.innerHTML = '<circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>';
+  themeInitialized = true;
+  const currentTheme = localStorage.getItem("theme") || "light";
+
+  const setSun = () => {
+    themeIcon.innerHTML =
+      '<circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>';
+  };
+
+  const setMoon = () => {
+    themeIcon.innerHTML =
+      '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>';
+  };
+
+  if (currentTheme === "dark") {
+    document.body.classList.add("dark-theme");
+    setSun();
+  } else {
+    document.body.classList.remove("dark-theme");
+    setMoon();
   }
 
-  toggleBtn.addEventListener('click', () => {
-    document.body.classList.toggle('dark-theme');
-    if (document.body.classList.contains('dark-theme')) {
-      localStorage.setItem('theme', 'dark');
-      themeIcon.innerHTML = '<circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>';
+  toggleBtn.addEventListener("click", () => {
+    const isDark = document.body.classList.toggle("dark-theme");
+    if (isDark) {
+      localStorage.setItem("theme", "dark");
+      setSun();
     } else {
-      localStorage.setItem('theme', 'light');
-      themeIcon.innerHTML = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>';
+      localStorage.setItem("theme", "light");
+      setMoon();
     }
   });
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  initThemeToggle();
-});
+// ── Profile Management ───────────────────────────────────────────
+
+async function loadProfile() {
+  if (!window.supabaseClient) return;
+  const user = await window.auth.getUser();
+  if (!user) return;
+
+  try {
+    const { data, error } = await window.supabaseClient
+      .from("profiles")
+      .select("*")
+      .eq("id", user.id)
+      .single();
+
+    if (error && error.code !== "PGRST116") {
+      console.error("Error loading profile:", error);
+      return;
+    }
+
+    if (data) {
+      currentProfile = data;
+      if (document.getElementById("profileFullName"))
+        document.getElementById("profileFullName").value =
+          data.full_name || "";
+      if (document.getElementById("profileUniversity"))
+        document.getElementById("profileUniversity").value =
+          data.university || "";
+      if (document.getElementById("profileExperience"))
+        document.getElementById("profileExperience").value =
+          data.experience_level || "Student";
+      if (document.getElementById("profileResumeText"))
+        document.getElementById("profileResumeText").value =
+          data.resume_text || "";
+    }
+  } catch (err) {
+    console.error("Profile load exception:", err);
+  }
+}
+
+document
+  .getElementById("saveProfileBtn")
+  ?.addEventListener("click", async () => {
+    if (!window.supabaseClient) return;
+    const user = await window.auth.getUser();
+    if (!user) {
+      alert("You must be logged in to save your profile.");
+      return;
+    }
+
+    const btn = document.getElementById("saveProfileBtn");
+    const statusEl = document.getElementById("profileSaveStatus");
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    statusEl.style.display = "none";
+
+    const profileData = {
+      id: user.id,
+      email: user.email,
+      full_name: document.getElementById("profileFullName")?.value || "",
+      university: document.getElementById("profileUniversity")?.value || "",
+      experience_level:
+        document.getElementById("profileExperience")?.value || "Student",
+      resume_text: document.getElementById("profileResumeText")?.value || "",
+      updated_at: new Date().toISOString(),
+    };
+
+    try {
+      const { error } = await window.supabaseClient
+        .from("profiles")
+        .upsert(profileData);
+
+      if (error) throw error;
+      currentProfile = profileData;
+
+      statusEl.style.display = "inline";
+      setTimeout(() => {
+        statusEl.style.display = "none";
+      }, 3000);
+    } catch (err) {
+      console.error("Error saving profile:", err);
+      alert("Failed to save profile: " + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "💾 Save Profile";
+    }
+  });
 
 perPageSelect.addEventListener("change", () => {
   currentOffset = 0;
@@ -726,115 +1296,42 @@ sortBySelect.addEventListener("change", loadInternships);
 
 async function initAuthListeners() {
   const ready = await waitForAuthReady();
-  if (!ready || !window.auth) {
-    return;
-  }
+  if (!ready || !window.auth) return;
 
   window.auth.onAuthStateChange(async (event, session) => {
     if (event === "SIGNED_OUT") {
       window.location.href = "login.html";
     } else if (event === "SIGNED_IN") {
       await checkAuth();
+      await loadProfile();
+      await loadSavedJobsFromCloud();
     }
   });
 }
 
-initAuthListeners();
-initThemeToggle();
+// ── App Initialization ───────────────────────────────────────────
 
 (async function init() {
-  console.log("[InternRadar] Initializing...");
+  console.log("[InternRadar] Initializing system...");
+  initThemeToggle();
+  initAuthListeners();
+
   const ready = await waitForAuthReady();
-  
+
   if (!ready) {
     console.warn("[InternRadar] Auth timeout, loading internships anyway");
-    setStatus("Auth is still loading, but fetching internships...");
     loadInternships();
     return;
   }
 
   const isAuthenticated = await checkAuth();
   console.log("[InternRadar] Auth result:", isAuthenticated);
-  
-  // Always load internships regardless of auth status
-  // (internships table has no RLS restrictions)
+
   updateBookmarkCount();
   loadInternships();
+
   if (isAuthenticated) {
     loadProfile();
+    loadSavedJobsFromCloud();
   }
 })();
-
-// ══════════════════════════════════════════
-// PROFILE LOGIC
-// ══════════════════════════════════════════
-
-async function loadProfile() {
-  if (!window.supabaseClient) return;
-  const user = await window.auth.getUser();
-  if (!user) return;
-
-  try {
-    const { data, error } = await window.supabaseClient
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .single();
-
-    if (error && error.code !== 'PGRST116') {
-      console.error("Error loading profile:", error);
-      return;
-    }
-    
-    if (data) {
-      if (document.getElementById("profileFullName")) document.getElementById("profileFullName").value = data.full_name || "";
-      if (document.getElementById("profileUniversity")) document.getElementById("profileUniversity").value = data.university || "";
-      if (document.getElementById("profileExperience")) document.getElementById("profileExperience").value = data.experience_level || "Student";
-      if (document.getElementById("profileResumeText")) document.getElementById("profileResumeText").value = data.resume_text || "";
-    }
-  } catch (err) {
-    console.error("Profile load exception:", err);
-  }
-}
-
-document.getElementById("saveProfileBtn")?.addEventListener("click", async () => {
-  if (!window.supabaseClient) return;
-  const user = await window.auth.getUser();
-  if (!user) {
-    alert("You must be logged in to save your profile.");
-    return;
-  }
-
-  const btn = document.getElementById("saveProfileBtn");
-  const statusEl = document.getElementById("profileSaveStatus");
-  btn.disabled = true;
-  btn.textContent = "Saving...";
-  statusEl.style.display = "none";
-
-  const profileData = {
-    id: user.id,
-    email: user.email,
-    full_name: document.getElementById("profileFullName")?.value || "",
-    university: document.getElementById("profileUniversity")?.value || "",
-    experience_level: document.getElementById("profileExperience")?.value || "Student",
-    resume_text: document.getElementById("profileResumeText")?.value || "",
-    updated_at: new Date().toISOString()
-  };
-
-  try {
-    const { error } = await window.supabaseClient
-      .from('profiles')
-      .upsert(profileData);
-      
-    if (error) throw error;
-    
-    statusEl.style.display = "inline";
-    setTimeout(() => { statusEl.style.display = "none"; }, 3000);
-  } catch (err) {
-    console.error("Error saving profile:", err);
-    alert("Failed to save profile: " + err.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "💾 Save Profile";
-  }
-});

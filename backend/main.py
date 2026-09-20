@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import os
+import json
 import logging
+import os
+import re
 from pathlib import Path
 
+import requests
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-import requests
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,7 +17,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
 
-app = FastAPI(title="InternRadar API", version="0.1.0")
+app = FastAPI(title="InternRadar API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,6 +49,9 @@ def _get_supabase_config() -> tuple[str, str]:
 
 def _format_supabase_error(prefix: str, exc: requests.RequestException) -> str:
     detail = f"{prefix}: {exc}"
+    exc_str = str(exc)
+    if "Failed to resolve" in exc_str or "Name or service not known" in exc_str:
+        detail += " | [IMPORTANT]: Supabase domain not resolving. If on Supabase free tier, your project is likely PAUSED due to inactivity. Please open https://supabase.com/dashboard and click 'Restore' or verify SUPABASE_URL in .env."
     response = getattr(exc, "response", None)
     if response is not None:
         snippet = response.text[:200].replace("\n", " ")
@@ -55,6 +60,89 @@ def _format_supabase_error(prefix: str, exc: requests.RequestException) -> str:
             detail += " | Supabase origin appears down or blocked. Check project status and URL."
     return detail
 
+
+# ── AI Helper (Groq Primary with Gemini Fallback) ─────────────────
+
+def _call_groq(prompt: str, system_prompt: str = "") -> str:
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not groq_key:
+        raise ValueError("GROQ_API_KEY is not configured")
+
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json",
+    }
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    models_to_try = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+    last_err = None
+    for model in models_to_try:
+        try:
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers,
+                json={"model": model, "messages": messages},
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data["choices"][0]["message"].get("content", "")
+                if content:
+                    return content.strip()
+            last_err = f"Status {resp.status_code}: {resp.text[:150]}"
+        except Exception as exc:
+            last_err = str(exc)
+
+    raise RuntimeError(f"Groq API call failed across models: {last_err}")
+
+
+def _call_gemini(prompt: str) -> str:
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not gemini_key:
+        raise ValueError("GEMINI_API_KEY is not configured")
+
+    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    last_err = None
+    for model in models_to_try:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}"
+            resp = requests.post(
+                url,
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                timeout=25,
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                candidates = result.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts and "text" in parts[0]:
+                        return parts[0]["text"].strip()
+            last_err = f"Status {resp.status_code}: {resp.text[:150]}"
+        except Exception as exc:
+            last_err = str(exc)
+
+    raise RuntimeError(f"Gemini API call failed: {last_err}")
+
+
+def _call_ai(prompt: str, system_prompt: str = "") -> str:
+    """Tries Groq first (lightning fast), falls back to Gemini."""
+    if os.getenv("GROQ_API_KEY", "").strip():
+        try:
+            return _call_groq(prompt, system_prompt)
+        except Exception as exc:
+            logger.warning("Groq AI failed, falling back to Gemini: %s", exc)
+
+    if os.getenv("GEMINI_API_KEY", "").strip():
+        return _call_gemini(f"{system_prompt}\n\n{prompt}" if system_prompt else prompt)
+
+    raise HTTPException(status_code=500, detail="Neither GROQ_API_KEY nor GEMINI_API_KEY is configured")
+
+
+# ── Health & Internships Endpoints ────────────────────────────────
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
@@ -73,57 +161,27 @@ def list_internships(
     date_from: str | None = None,
 ) -> dict[str, object]:
     base_url, service_role_key = _get_supabase_config()
-    
-    count_params: dict[str, str] = {"select": "id", "limit": "1000"}
-    if source_in:
-        sources = [s.strip() for s in source_in.split(",") if s.strip()]
-        if sources:
-            count_params["source"] = f"in.({','.join(sources)})"
-    if keyword:
-        count_params["keyword"] = f"ilike.*{keyword.lower()}*"
-    if location:
-        count_params["location"] = f"ilike.*{location.lower()}*"
-    if date_from:
-        count_params["scraped_date"] = f"gte.{date_from}"
-    
-    headers = {
-        "apikey": service_role_key,
-        "Authorization": f"Bearer {service_role_key}",
-        "Accept": "application/json",
-    }
 
-    try:
-        count_response = requests.get(
-            f"{base_url}/rest/v1/internships",
-            headers=headers,
-            params=count_params,
-            timeout=30,
-        )
-        count_response.raise_for_status()
-        all_data = count_response.json()
-        total_count = len(all_data) if isinstance(all_data, list) else 0
-    except requests.RequestException as exc:
-        logger.warning(_format_supabase_error("Supabase count query failed", exc))
-        total_count = 0
-    
     params: dict[str, str] = {
         "select": "id,title,company,location,link,source,keyword,posted_date,scraped_date",
         "limit": str(limit),
         "offset": str(offset),
     }
-    
+
     if source_in:
         sources = [s.strip() for s in source_in.split(",") if s.strip()]
         if sources:
             params["source"] = f"in.({','.join(sources)})"
-    
+    elif source:
+        params["source"] = f"eq.{source.strip()}"
+
     if keyword:
         params["keyword"] = f"ilike.*{keyword.lower()}*"
     if location:
         params["location"] = f"ilike.*{location.lower()}*"
     if date_from:
         params["scraped_date"] = f"gte.{date_from}"
-    
+
     order_field = "scraped_date"
     if sort == "oldest":
         order_field = "scraped_date"
@@ -136,8 +194,15 @@ def list_internships(
         order = "desc"
     else:
         order = "desc"
-    
+
     params["order"] = f"{order_field}.{order}"
+
+    headers = {
+        "apikey": service_role_key,
+        "Authorization": f"Bearer {service_role_key}",
+        "Accept": "application/json",
+        "Prefer": "count=exact",
+    }
 
     try:
         response = requests.get(
@@ -151,6 +216,15 @@ def list_internships(
         detail = _format_supabase_error("Supabase REST query failed", exc)
         raise HTTPException(status_code=500, detail=detail) from exc
 
+    # Parse total count from Content-Range header (e.g. 0-19/450)
+    total_count = 0
+    content_range = response.headers.get("Content-Range", "")
+    if "/" in content_range:
+        try:
+            total_count = int(content_range.split("/")[-1])
+        except (ValueError, IndexError):
+            total_count = 0
+
     try:
         data = response.json()
     except ValueError as exc:
@@ -159,7 +233,11 @@ def list_internships(
             status_code=502,
             detail=f"Supabase returned non-JSON response: {snippet}",
         ) from exc
+
     items = data if isinstance(data, list) else []
+    if total_count == 0 and items:
+        total_count = len(items)
+
     return {
         "count": len(items),
         "total": total_count,
@@ -173,7 +251,7 @@ def list_internships(
 @app.get("/internships/sources")
 def get_sources() -> dict[str, object]:
     base_url, service_role_key = _get_supabase_config()
-    
+
     try:
         response = requests.get(
             f"{base_url}/rest/v1/internships",
@@ -181,58 +259,167 @@ def get_sources() -> dict[str, object]:
                 "apikey": service_role_key,
                 "Authorization": f"Bearer {service_role_key}",
             },
-            params={
-                "select": "source",
-                "limit": 1000,
-            },
+            params={"select": "source", "limit": "2000"},
             timeout=30,
         )
         response.raise_for_status()
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to get sources: {exc}") from exc
-    
-    data = response.json()
+        data = response.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch dynamic sources: %s", exc)
+        data = []
+
     items = data if isinstance(data, list) else []
-    sources = list(set(item.get("source", "") for item in items if item.get("source")))
-    return {"sources": sorted(sources)}
+    db_sources = set(item.get("source", "") for item in items if item.get("source"))
+    all_sources = sorted(list(db_sources.union({"LinkedIn", "Internshala", "BDJobs", "RemoteOK", "Arbeitnow"})))
+    return {"sources": all_sources}
 
 
 @app.get("/internships/stats")
 def get_stats() -> dict[str, object]:
     base_url, service_role_key = _get_supabase_config()
-    
+
     try:
         response = requests.get(
             f"{base_url}/rest/v1/internships",
             headers={
                 "apikey": service_role_key,
                 "Authorization": f"Bearer {service_role_key}",
+                "Prefer": "count=exact",
             },
-            params={
-                "select": "source,scraped_date",
-                "limit": 1000,
-            },
+            params={"select": "source", "limit": "2000"},
             timeout=30,
         )
         response.raise_for_status()
-    except requests.RequestException as exc:
+        data = response.json()
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to get stats: {exc}") from exc
-    
-    data = response.json()
+
     items = data if isinstance(data, list) else []
-    
     source_counts: dict[str, int] = {}
     for item in items:
         src = item.get("source") or "Unknown"
         source_counts[src] = source_counts.get(src, 0) + 1
-    
+
+    content_range = response.headers.get("Content-Range", "")
+    total = len(items)
+    if "/" in content_range:
+        try:
+            total = int(content_range.split("/")[-1])
+        except (ValueError, IndexError):
+            pass
+
     return {
-        "total": len(items),
+        "total": total,
         "by_source": source_counts,
     }
 
 
-# ── Phase 2: Kanban – saved_jobs status management ──────────────
+# ── Saved Jobs & Kanban Endpoints ─────────────────────────────────
+
+@app.get("/saved-jobs")
+def get_saved_jobs(user_id: str = Query(...)) -> dict:
+    """Get all saved jobs for a user, including internship details, status, and notes."""
+    base_url, key = _get_supabase_config()
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/json",
+    }
+    try:
+        resp = requests.get(
+            f"{base_url}/rest/v1/saved_jobs",
+            headers=headers,
+            params={
+                "select": "id,status,created_at,internship_id,internships(id,title,company,location,link,source,keyword,posted_date)",
+                "user_id": f"eq.{user_id}",
+                "order": "created_at.desc",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch saved jobs: {exc}") from exc
+    data = resp.json()
+    return {"items": data if isinstance(data, list) else []}
+
+
+@app.post("/saved-jobs")
+def create_saved_job(payload: dict) -> dict:
+    """Save an internship to the user's personal profile / Kanban."""
+    user_id = payload.get("user_id")
+    internship_id = payload.get("internship_id")
+    status = payload.get("status", "Saved")
+
+    if not user_id or not internship_id:
+        raise HTTPException(status_code=400, detail="'user_id' and 'internship_id' are required")
+
+    base_url, key = _get_supabase_config()
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=representation",
+    }
+
+    try:
+        resp = requests.post(
+            f"{base_url}/rest/v1/saved_jobs",
+            headers=headers,
+            json={"user_id": user_id, "internship_id": internship_id, "status": status},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save job: {exc}") from exc
+
+    return {"success": True, "saved_job": data[0] if isinstance(data, list) and data else {}}
+
+
+@app.delete("/saved-jobs")
+def delete_saved_job_by_query(
+    user_id: str = Query(...),
+    internship_id: str = Query(...),
+) -> dict:
+    """Delete a saved job using user_id and internship_id."""
+    base_url, key = _get_supabase_config()
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+    }
+    try:
+        resp = requests.delete(
+            f"{base_url}/rest/v1/saved_jobs",
+            headers=headers,
+            params={"user_id": f"eq.{user_id}", "internship_id": f"eq.{internship_id}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete saved job: {exc}") from exc
+    return {"success": True}
+
+
+@app.delete("/saved-jobs/{job_id}")
+def delete_saved_job_by_id(job_id: str) -> dict:
+    """Delete a saved job using its record id."""
+    base_url, key = _get_supabase_config()
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+    }
+    try:
+        resp = requests.delete(
+            f"{base_url}/rest/v1/saved_jobs",
+            headers=headers,
+            params={"id": f"eq.{job_id}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete saved job: {exc}") from exc
+    return {"success": True}
+
 
 @app.patch("/saved-jobs/{job_id}/status")
 def update_saved_job_status(job_id: str, status: str = Query(...)) -> dict:
@@ -262,34 +449,7 @@ def update_saved_job_status(job_id: str, status: str = Query(...)) -> dict:
     return {"success": True, "status": status}
 
 
-@app.get("/saved-jobs")
-def get_saved_jobs(user_id: str = Query(...)) -> dict:
-    """Get all saved jobs for a user, including internship details and status."""
-    base_url, key = _get_supabase_config()
-    headers = {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Accept": "application/json",
-    }
-    try:
-        resp = requests.get(
-            f"{base_url}/rest/v1/saved_jobs",
-            headers=headers,
-            params={
-                "select": "id,status,created_at,internship_id,internships(id,title,company,location,link,source,keyword,posted_date)",
-                "user_id": f"eq.{user_id}",
-                "order": "created_at.desc",
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch saved jobs: {exc}") from exc
-    data = resp.json()
-    return {"items": data if isinstance(data, list) else []}
-
-
-# ── Phase 3: Enhanced Analytics ──────────────────────────────────
+# ── Phase 3: Analytics ───────────────────────────────────────────
 
 @app.get("/analytics")
 def get_analytics() -> dict:
@@ -308,10 +468,10 @@ def get_analytics() -> dict:
             timeout=30,
         )
         resp.raise_for_status()
+        data = resp.json()
     except requests.RequestException as exc:
         raise HTTPException(status_code=500, detail=f"Analytics query failed: {exc}") from exc
 
-    data = resp.json()
     items = data if isinstance(data, list) else []
 
     by_source: dict[str, int] = {}
@@ -334,9 +494,7 @@ def get_analytics() -> dict:
         if sd:
             by_date[sd] = by_date.get(sd, 0) + 1
 
-    # Top 10 locations
     top_locations = dict(sorted(by_location.items(), key=lambda x: x[1], reverse=True)[:10])
-    # Top 10 keywords
     top_keywords = dict(sorted(by_keyword.items(), key=lambda x: x[1], reverse=True)[:10])
 
     return {
@@ -348,92 +506,123 @@ def get_analytics() -> dict:
     }
 
 
-# ── Phase 4: AI Cover Letter Generator ──────────────────────────
+# ── Groq / Gemini AI Endpoints ───────────────────────────────────
+
+@app.post("/analyze-resume-match")
+def analyze_resume_match(payload: dict) -> dict:
+    """Analyze fit between applicant resume and internship posting using fast Groq AI."""
+    resume_text = payload.get("resume_text", "").strip()
+    title = payload.get("title", "Internship")
+    company = payload.get("company", "Company")
+    description = payload.get("description", "")
+
+    if not resume_text:
+        return {
+            "success": True,
+            "match_score": 50,
+            "matching_skills": ["General Background"],
+            "missing_skills": ["Resume not provided"],
+            "recommendation": "Paste your full resume in the Profile & CV tab to get precise match score and tailored advice!",
+        }
+
+    prompt = f"""You are an elite technical career advisor.
+Evaluate how well the applicant's resume matches this opportunity.
+
+POSITION: {title}
+COMPANY: {company}
+JOB DETAILS: {description[:800]}
+
+APPLICANT RESUME:
+{resume_text[:2500]}
+
+Return STRICTLY a valid JSON object matching this schema, with no markdown, backticks, or extra text:
+{{
+  "match_score": <number between 20 and 98 representing qualification fit percentage>,
+  "matching_skills": [<array of 3-5 key skills found in both resume and role>],
+  "missing_skills": [<array of 2-4 important skills needed for this role that are missing or weak in resume>],
+  "recommendation": "<2 concise sentences on what the applicant should highlight or brush up on when applying>"
+}}"""
+
+    system_prompt = "You are a JSON-only response engine. Return exclusively valid raw JSON without code blocks or conversational text."
+    raw_response = _call_ai(prompt, system_prompt)
+
+    try:
+        # Clean any backticks or markdown if present
+        clean_json = re.sub(r"^```(json)?", "", raw_response.strip(), flags=re.IGNORECASE)
+        clean_json = re.sub(r"```$", "", clean_json.strip()).strip()
+        result = json.loads(clean_json)
+    except Exception:
+        # Fallback structured response
+        result = {
+            "match_score": 75,
+            "matching_skills": ["Technical Foundation", "Relevant Coursework"],
+            "missing_skills": ["Specific frameworks mentioned in job post"],
+            "recommendation": raw_response[:200] if raw_response else "Highlight your most impactful project on your resume before applying.",
+        }
+
+    return {"success": True, **result}
+
+
+@app.post("/generate-outreach-message")
+def generate_outreach_message(payload: dict) -> dict:
+    """Generate a high-converting, concise LinkedIn connection note / recruiter DM."""
+    title = payload.get("title", "Internship")
+    company = payload.get("company", "Company")
+    user_name = payload.get("user_name", "Applicant")
+    resume_text = payload.get("resume_text", "")
+
+    prompt = f"""Write a high-converting, polite, and punchy 3-4 sentence LinkedIn outreach message from an applicant to a hiring manager/recruiter at {company} regarding the {title} position.
+
+Applicant Name: {user_name}
+Background summary: {resume_text[:1000] if resume_text else 'Computer Science / Engineering student'}
+
+RULES:
+- Length: 50-75 words max (must fit in LinkedIn 300-char connection request or short InMail)
+- Sound genuine, ambitious, and respectful. No generic boilerplate phrases like "I hope this message finds you well"
+- Highlight 1 concrete technical skill or project match
+- Output ONLY the message text."""
+
+    message = _call_ai(prompt, "You write concise, polite, professional LinkedIn outreach messages.")
+    return {"success": True, "outreach_message": message}
+
 
 @app.post("/generate-cover-letter")
 def generate_cover_letter(payload: dict) -> dict:
-    """Generate a tailored cover letter using Gemini AI with resume-aware personalization."""
-    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not gemini_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured")
-
+    """Generate a tailored cover letter using AI with resume-aware personalization."""
     title = payload.get("title", "")
     company = payload.get("company", "")
     location = payload.get("location", "")
     user_name = payload.get("user_name", "Applicant")
-    user_skills = payload.get("user_skills", "")  # This is now the full resume text
+    user_skills = payload.get("user_skills", "")
 
-    # Build a smart, resume-aware prompt
-    if user_skills and len(user_skills.strip()) > 50:
-        # Full resume provided — deep personalization mode
-        resume_section = f"""
-=== APPLICANT'S FULL RESUME / CV ===
-{user_skills}
-=== END RESUME ===
-"""
-        personalization_instructions = """
-CRITICAL PERSONALIZATION RULES:
-- You MUST read the resume above carefully and extract SPECIFIC projects, skills, coursework, and experiences that are directly relevant to this particular job.
-- Reference at least 2-3 specific items from the resume (project names, technologies used, achievements, relevant coursework).
-- Connect EACH mentioned experience directly to what this company/role likely needs.
-- Do NOT use generic phrases. Every sentence should feel like it was written by a human who knows both the applicant and the company.
-- Vary sentence structure. Mix short punchy sentences with longer descriptive ones.
-- The tone should sound like a confident peer, not a desperate applicant."""
-    else:
-        # No resume — lighter personalization
-        resume_section = f"\nApplicant Background: {user_skills if user_skills else 'Computer Science / Engineering student'}\n"
-        personalization_instructions = """
-PERSONALIZATION RULES:
-- Write a solid, professional cover letter based on the job title and company.
-- Use confident, natural language. Avoid filler and cliché phrases."""
+    resume_section = (
+        f"=== APPLICANT RESUME ===\n{user_skills}\n=== END RESUME ==="
+        if user_skills and len(user_skills.strip()) > 50
+        else f"Applicant Background: {user_skills or 'Computer Science / Engineering student'}"
+    )
 
     prompt = f"""You are an expert career coach who writes cover letters that actually get interviews.
-Write a cover letter for the following position. Make it sound like a REAL HUMAN wrote it — not an AI.
+Write a concise, compelling cover letter for the following position. Make it sound like a real human wrote it.
 
-=== JOB DETAILS ===
 Position: {title}
 Company: {company}
 Location: {location}
 Applicant Name: {user_name}
 {resume_section}
-{personalization_instructions}
 
-FORMATTING & STYLE RULES:
-- Length: 200-300 words (concise and impactful, no fluff)
-- Start with "Dear {company} Hiring Team," (or a specific team name if inferrable from the role)
-- End with "Sincerely,\\n{user_name}"
-- Do NOT use placeholder brackets like [Your Name], [University], etc. — use actual info from the resume or leave it out
-- Do NOT use these overused AI words: "delve", "testament", "passion", "landscape", "tapestry", "synergy", "leverage", "foster", "beacon", "moreover", "furthermore", "pivotal"
-- Write in first person, active voice
-- Each paragraph should have a DIFFERENT focus (don't repeat points)
-- Paragraph 1: Hook — why this specific role at this specific company excites you (be specific, not generic)
-- Paragraph 2: Your strongest relevant experience/project mapped to what the role needs
-- Paragraph 3: A second relevant experience or skill + what you'll bring to the team
-- Paragraph 4: Brief, confident closing — express enthusiasm for next steps
-- No generic sign-offs like "I look forward to the opportunity to discuss my qualifications further"
+RULES:
+- Length: 200-280 words (concise and impactful)
+- Start with "Dear {company} Hiring Team,"
+- End with "Sincerely,\n{user_name}"
+- Reference 2 specific achievements or skills from the resume that fit this position
+- Avoid cliché AI words: "delve", "testament", "passion", "landscape", "tapestry", "synergy", "leverage", "foster"
+- Output ONLY the letter text without markdown backticks or extra comments."""
 
-OUTPUT: Return ONLY the cover letter text, no extra commentary or markdown formatting."""
-
-    try:
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}"
-        )
-        resp = requests.post(
-            url,
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        text = result["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as exc:
-        logger.error(f"Gemini API error: {exc}")
-        raise HTTPException(status_code=500, detail=f"AI generation failed: {exc}") from exc
-
-    return {"cover_letter": text}
+    letter_text = _call_ai(prompt, "You are a professional career coach writing tailored cover letters.")
+    return {"cover_letter": letter_text}
 
 
-# ── Phase 6: Email Alerts via Resend ─────────────────────────────
+# ── Email Alerts via Resend ──────────────────────────────────────
 
 @app.post("/send-alert-email")
 def send_alert_email(payload: dict) -> dict:
@@ -466,7 +655,7 @@ def send_alert_email(payload: dict) -> dict:
         )
         resp.raise_for_status()
     except requests.RequestException as exc:
-        logger.error(f"Resend API error: {exc}")
+        logger.error("Resend API error: %s", exc)
         raise HTTPException(status_code=500, detail=f"Email sending failed: {exc}") from exc
 
     return {"success": True, "message": f"Email sent to {to_email}"}

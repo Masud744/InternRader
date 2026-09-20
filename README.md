@@ -64,22 +64,25 @@ The system features a highly optimized FastAPI backend for fast data aggregation
 
 ### Frontend (User Dashboard)
 
-| Feature                 | Description                                                |
-| ----------------------- | ---------------------------------------------------------- |
-| Real-time Data Hub      | Live internship fetching node with dynamic search.         |
-| Advanced Filtering      | Filter opportunities by keyword, location, date, and source.|
-| Bookmarking System      | Users can save internships to their personal profile.      |
-| Pagination              | Efficient client-side navigation of large datasets.        |
-| Professional Theme      | "Dark cards on a light background" with a sleek Hero Banner.|
-| Authentication System   | Full login, signup, and password reset flows via Supabase. |
+| Feature                     | Description                                                |
+| --------------------------- | ---------------------------------------------------------- |
+| Real-time Data Hub          | Live internship fetching node with dynamic search.         |
+| Multiple Live Portals       | Aggregates LinkedIn, BDJobs, Internshala, RemoteOK, Arbeitnow.|
+| Groq AI Resume Match Score  | Instant 0-100% fit score, missing skills & actionable tips.|
+| AI Recruiter Outreach DM    | Generates personalized LinkedIn connection notes in <1s.  |
+| AI Cover Letter Generator   | Tailored cover letters based on your full resume.          |
+| Cloud-Synced Kanban Board   | Track applications (Saved, Applied, Interviewing, etc.) across devices.|
+| Quick Filter Chips          | Instant one-click filters: Remote, Bangladesh, AI, Python. |
+| Authentication System       | Full login, signup, profile & password reset via Supabase. |
 
 ### Backend (FastAPI)
 
-| Feature                 | Description                                                |
-| ----------------------- | ---------------------------------------------------------- |
-| Fast Data Aggregation   | Asynchronous data fetching across job sources.             |
-| Search & Querying       | Flexible endpoint parameters (`limit`, `keyword`, `location`).|
-| Security                | Configured CORS for Netlify frontend integration.          |
+| Feature                     | Description                                                |
+| --------------------------- | ---------------------------------------------------------- |
+| High-Speed Aggregation      | Asynchronous data fetching across 5+ global & local portals.|
+| Groq Llama 3.3 / GPT-OSS    | Ultra-fast AI inference for match scores and outreach DMs. |
+| Saved Jobs Cloud REST API   | Full CRUD for user applications and cross-device sync.     |
+| Resend Email Alerts         | Beautiful automated HTML digests sent directly to inbox.   |
 
 ---
 

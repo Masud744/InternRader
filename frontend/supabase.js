@@ -56,11 +56,14 @@ function initSupabase() {
     console.log("✓ Supabase client ready");
     
     window.auth = {
-      async signUp(email, password) {
+      async signUp(email, password, metadata = {}) {
         const { data, error } = await window.supabaseClient.auth.signUp({
           email,
           password,
-          options: { emailRedirectTo: window.location.origin + "/index.html" }
+          options: {
+            data: metadata,
+            emailRedirectTo: window.location.origin + "/index.html"
+          }
         });
         if (error) throw new Error(error.message);
         return data;

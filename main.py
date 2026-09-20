@@ -66,15 +66,17 @@ def run_pipeline() -> int:
             "Supabase is not configured, skipping persistence for this run"
         )
 
-    if settings.smtp_host and settings.email_from and settings.email_to:
+    resend_key = os.getenv("RESEND_API_KEY", "").strip()
+    if settings.email_to and (resend_key or (settings.smtp_host and settings.email_from)):
         notifier_class = _load_email_notifier_class()
         notifier = notifier_class(
             smtp_host=settings.smtp_host,
             smtp_port=settings.smtp_port,
             username=settings.smtp_user,
             password=settings.smtp_password,
-            sender=settings.email_from,
+            sender=settings.email_from or "InternRadar <onboarding@resend.dev>",
             recipients=settings.email_to,
+            resend_api_key=resend_key,
         )
         if new_items or settings.send_empty_digest:
             notifier.send_digest(
@@ -86,7 +88,7 @@ def run_pipeline() -> int:
         else:
             logger.info("No new postings found, digest skipped")
     else:
-        logger.warning("SMTP settings are incomplete, skipping email notification")
+        logger.warning("Email settings are incomplete (no recipients or neither RESEND_API_KEY nor SMTP configured), skipping email notification")
 
     logger.info("InternRadar daily run finished")
     return 0

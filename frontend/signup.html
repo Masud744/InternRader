@@ -191,7 +191,14 @@
       submitBtn.textContent = "Creating account...";
       
       try {
-        const data = await window.auth.signUp(email, password);
+        const metadata = {
+          full_name: document.getElementById("fullName").value.trim(),
+          interest_area: document.getElementById("interestArea").value,
+          experience_level: document.getElementById("experienceLevel").value,
+          university: document.getElementById("university").value.trim(),
+        };
+
+        const data = await window.auth.signUp(email, password, metadata);
         
         // If user is auto-confirmed, create profile immediately
         const user = data?.user;

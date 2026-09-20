@@ -35,6 +35,8 @@ create table if not exists saved_jobs (
     user_id uuid references auth.users(id) on delete cascade not null,
     internship_id uuid references internships(id) on delete cascade not null,
     status text not null default 'Saved' check (status in ('Saved', 'Applied', 'Interviewing', 'Accepted', 'Rejected')),
+    notes text,
+    applied_date text,
     created_at timestamptz default now(),
     unique(user_id, internship_id)
 );
@@ -58,6 +60,9 @@ create policy "Users can read their own saved jobs" on saved_jobs
 
 create policy "Users can insert their own saved jobs" on saved_jobs
     for insert with check (auth.uid() = user_id);
+
+create policy "Users can update their own saved jobs" on saved_jobs
+    for update using (auth.uid() = user_id);
 
 create policy "Users can delete their own saved jobs" on saved_jobs
     for delete using (auth.uid() = user_id);
