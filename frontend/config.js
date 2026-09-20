@@ -3,5 +3,5 @@ const isLocal = window.location.hostname === "127.0.0.1" || window.location.host
 window.INTERNRADAR_CONFIG = {
   apiBaseUrl: isLocal ? "http://127.0.0.1:8000" : "/api",
   supabaseUrl: "https://uwjinixfmfvxafjikzrd.supabase.co",
-  supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZkdHZidWhoem9qYnF0d3hodGd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1ODEyNTYsImV4cCI6MjA5MTE1NzI1Nn0.nCPP70RIMvZouWIiNFoZJFjZ43q2bFlC_qlcd8FNCN0"
+  supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV3amluaXhmbWZ2eGFmamlrenJkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzMjMzNjgsImV4cCI6MjA5NTg5OTM2OH0.3fzL4beQhoDZOjKF1VxWoVc3-LuCYDCESwTJqnujzcQ"
 };
